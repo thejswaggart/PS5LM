@@ -79,7 +79,7 @@ constexpr int          kMarketChipCount = 7;
 
 // ---- Settings -------------------------------------------------------------------
 
-enum class Setting : int { auto_load, default_model, ctx_cap, kv_type, sounds, tools, introspect, scratch_limit, clear_scratch, download_dir,
+enum class Setting : int { auto_load, default_model, ctx_cap, kv_type, sounds, tools, file_tools, introspect, scratch_limit, clear_scratch, download_dir,
                            storage, debug_report, report_kernel_log };
 
 struct SettingRow {
@@ -90,7 +90,7 @@ struct SettingRow {
 
 struct SettingCategory {
     const char * name;
-    SettingRow   rows[3];
+    SettingRow   rows[4];
     int          count;
 };
 
@@ -104,10 +104,11 @@ constexpr SettingCategory kCategories[] = {
         { Setting::kv_type, "Context cache", "Auto picks the best that fits; a fixed type trades length for quality" } },
       2 },
     { "Chat",
-      { { Setting::tools, "File tools", "The browser chat may read and write files in /data/PS5LM/scratch" },
+      { { Setting::tools, "Chat tools", "The browser chat's tools work in /data/PS5LM/scratch; at the next load" },
+        { Setting::file_tools, "Read and write files", "Off: only the handoff note and remote commands; at the next load" },
         { Setting::scratch_limit, "Warn above", "A notification when that folder grows past this" },
         { Setting::clear_scratch, "Clear the scratch folder", "Deletes everything the chat's tools wrote" } },
-      3 },
+      4 },
     { "Sound and storage",
       { { Setting::sounds, "Sounds", "Interface sounds on the TV" },
         { Setting::download_dir, "Save downloads to", "Internal storage, or PS5LM/models on an M.2 or USB drive" },
@@ -416,7 +417,8 @@ std::string setting_text(const Settings & s, Setting id, const std::vector<Model
 }
 
 bool is_toggle(Setting id) {
-    return id == Setting::auto_load || id == Setting::sounds || id == Setting::tools || id == Setting::introspect
+    return id == Setting::auto_load || id == Setting::sounds || id == Setting::tools || id == Setting::file_tools
+        || id == Setting::introspect
         || id == Setting::report_kernel_log;
 }
 
@@ -426,6 +428,7 @@ bool & toggle_ref(Settings & s, Setting id) {
         case Setting::sounds:            return s.sounds;
         case Setting::introspect:        return s.introspect;
         case Setting::report_kernel_log: return s.report_kernel_log;
+        case Setting::file_tools:        return s.file_tools;
         default:                         return s.tools;
     }
 }

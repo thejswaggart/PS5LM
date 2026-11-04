@@ -8,6 +8,22 @@ v0.1.x are the upstream payload releases by cobanov.
 ## [Unreleased]
 
 ### Added
+- **Context status and handoff notes**: `patches/0011` adds three tools to llama-server.
+  `context_status` tells the browser chat's model how many tokens of its context it has used, and
+  each `remote_command` result ends with the same count. Past 70% (`LLAMA_HANDOFF_AT`) both ask
+  the model to call `save_handoff`, which writes a summary of its work to
+  `/data/PS5LM/scratch/handoff.md` (`LLAMA_HANDOFF_PATH`) with no path to give, and to tell the
+  user to start a new conversation, where `load_handoff` reads it back. The count is not added
+  to the chat prompt: with one prompt checkpoint (`-ctxcp 1`), a line there would make
+  Qwen3.5-type models process the whole conversation again on the next turn. Run on a console
+  with Qwen3.6-35B-A3B UD-IQ1_M at 128k: the tools answer, the note reaches
+  `/data/PS5LM/scratch/handoff.md`, and the model calls `context_status` and `save_handoff` when
+  asked. The 70% warning and the new switch were not tried there.
+- **Read and write files** on the Settings page (Chat, `file_tools` in `settings.json`): off
+  drops `read_file`, `write_file`, `edit_file`, `file_glob_search` and `grep_search` from the
+  browser chat, and keeps the handoff tools and `remote_command`, for a model that confuses this
+  PS5's paths with the command server's. "File tools" is now "Chat tools", which turns all of
+  them off. Both apply at the next model load.
 - **remote_command**: the browser chat's model can run a shell command on another machine, as a
   PS5 title cannot start processes. `patches/0010` adds the tool to llama-server: it sends
   `{"command", "timeout"}` to `POST /run` on a small command server (ai_bridge's

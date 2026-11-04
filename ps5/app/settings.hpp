@@ -16,7 +16,11 @@ struct Settings {
     uint32_t    ctx_cap   = 65536;  // the planner's longest context
     std::string kv_type   = "auto"; // "auto", "f16", "q8_0" or "q4_0"
     bool        sounds    = true;
-    bool        tools     = true;   // file tools in the browser chat, inside the scratch folder
+    bool        tools     = true;   // the browser chat's tools, working in the scratch folder
+    // Its file tools (read_file, write_file, ...); off leaves the handoff note,
+    // context_status and remote_command, for a model that mixes up this PS5's paths
+    // with the command server's.
+    bool        file_tools = true;
     // The browser chat's remote_command tool (patches/0010): the command server as
     // "host:port", a numeric address (empty: no tool), and the token it checks.
     std::string remote_command;

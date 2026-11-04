@@ -125,8 +125,11 @@ struct Files {
 };
 Files g_files(kFullRoot);
 constexpr const char * kFleetWorker = "/data/PS5LM/fleet-worker.txt";  // fleet needs full storage
-// The file tools only: a title cannot start processes (no shell command).
-constexpr const char * kTools       = "read_file,write_file,edit_file,file_glob_search,grep_search,get_info";
+// No exec_shell_command: a title cannot start processes. The file tools can be
+// switched off on their own (Settings, file_tools).
+constexpr const char * kFileTools   = "read_file,write_file,edit_file,file_glob_search,grep_search,";
+// patches/0011: how full the context is, and a handoff note for the next conversation
+constexpr const char * kTools       = "get_info,context_status,save_handoff,load_handoff";
 constexpr const char * kAssets      = "/app0/assets";
 constexpr int          kPort        = 8081;
 // Both homes' models are listed: a model saved to the app's storage still
@@ -733,8 +736,8 @@ struct Models {
         if (std::find(args.begin(), args.end(), "--metrics") == args.end()) {
             args.push_back("--metrics");
         }
-        // The browser chat's file tools, confined to the scratch folder by
-        // patches/0003 (LLAMA_TOOLS_ROOT) and working there by default.
+        // The browser chat's tools, the file tools confined to the scratch folder
+        // by patches/0003 (LLAMA_TOOLS_ROOT) and working there by default.
         if (settings.tools && std::find(args.begin(), args.end(), "--tools") == args.end()) {
             std::error_code ec;
             std::filesystem::create_directories(g_files.scratch, ec);
@@ -742,7 +745,8 @@ struct Models {
             chdir(g_files.scratch.c_str());
             // remote_command runs shell commands on the machine the setting names
             // (patches/0010), as a title cannot start processes itself.
-            std::string tools = kTools;
+            std::string tools = std::string(settings.file_tools ? kFileTools : "") + kTools;
+            setenv("LLAMA_HANDOFF_PATH", (g_files.scratch + "/handoff.md").c_str(), 1);
             if (!settings.remote_command.empty()) {
                 tools += ",remote_command";
                 setenv("LLAMA_REMOTE_COMMAND", settings.remote_command.c_str(), 1);
