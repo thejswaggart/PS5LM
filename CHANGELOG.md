@@ -5,6 +5,22 @@ Versions follow [semver](https://semver.org). The app's version is set in
 `v<version>` and ships `ps5lm-app-v<version>.zip` (see `scripts/release-app.sh`).
 v0.1.x are the upstream payload releases by cobanov.
 
+## [Unreleased]
+
+### Added
+- **remote_command**: the browser chat's model can run a shell command on another machine, as a
+  PS5 title cannot start processes. `patches/0010` adds the tool to llama-server: it sends
+  `{"command", "timeout"}` to `POST /run` on a small command server (ai_bridge's
+  `server_ubuntu26.py`) and gives the model the exit code, stdout and stderr (16 KiB each at
+  most). Off unless `remote_command` in `settings.json` names the server as `host:port` (a
+  numeric address); `remote_command_token` goes in `X-Command-Token` for the server to check.
+  The web UI asks before each call, and the TV shows each command. This replaces ai_bridge's
+  payload, which passed commands and output through files in the scratch folder.
+  `tests/remote_command_tool_test.py` checks it on a host build (not run yet: the host build
+  needs AVX2, which the PC it was written on lacks). Run on a console on
+  2026-11-04 with Qwen3.6-35B-A3B: the model ran `df -h /` on the PC and answered from it, and
+  the server refused requests with no token or a wrong one.
+
 ## [0.11.0] - 2026-11-02
 
 ### Added

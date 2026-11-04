@@ -24,6 +24,8 @@ Settings load_settings(const char * path) {
     s.sounds        = j.value("sounds", s.sounds);
     s.tools         = j.value("tools", s.tools);
     s.introspect    = j.value("introspect", s.introspect);
+    s.remote_command       = j.value("remote_command", s.remote_command);
+    s.remote_command_token = j.value("remote_command_token", s.remote_command_token);
     s.scratch_limit_gib = j.value("scratch_limit_gib", s.scratch_limit_gib);
     s.download_dir  = j.value("download_dir", s.download_dir);
     s.report_kernel_log = j.value("report_kernel_log", s.report_kernel_log);
@@ -36,6 +38,7 @@ bool save_settings(const char * path, const Settings & s) {
         { "auto_load", s.auto_load }, { "default_model", s.default_model }, { "ctx_cap", s.ctx_cap },
         { "kv_type", s.kv_type },     { "sounds", s.sounds },       { "tools", s.tools },
         { "introspect", s.introspect },
+        { "remote_command", s.remote_command }, { "remote_command_token", s.remote_command_token },
         { "scratch_limit_gib", s.scratch_limit_gib }, { "download_dir", s.download_dir },
         { "report_kernel_log", s.report_kernel_log }, { "report_explained", s.report_explained },
     };

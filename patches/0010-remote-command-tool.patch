@@ -1,0 +1,134 @@
+PS5LM: a remote_command tool: the browser chat's model runs a shell command on another machine
+through a small HTTP command server (POST /run), since a PS5 title cannot start processes.
+
+diff --git a/tools/server/server-tools.cpp b/tools/server/server-tools.cpp
+--- a/tools/server/server-tools.cpp
++++ b/tools/server/server-tools.cpp
+@@ -3,6 +3,8 @@
+ #include "subproc.h"
+ #include "base64.hpp"
+ 
++#include <cpp-httplib/httplib.h>  // PS5LM: remote_command
++
+ #include <filesystem>
+ #include <fstream>
+ #include <regex>
+@@ -1333,6 +1335,110 @@
+ };
+ 
+ //
++// PS5LM: remote_command: run a shell command on another machine, through the
++// command server ai_bridge's server_ubuntu26.py runs (POST /run with
++// {"command"}, answering {"stdout", "stderr", "exit_code"}). A PS5 title
++// cannot start processes, so exec_shell_command cannot run there.
++// LLAMA_REMOTE_COMMAND is the server as "host:port" (a numeric address on the
++// PS5), and LLAMA_REMOTE_COMMAND_TOKEN, if set, goes in X-Command-Token.
++//
++
++extern "C" __attribute__((weak)) void ps5lm_remote_command(const char * command);  // the PS5 app shows it on the TV
++
++static constexpr int SERVER_TOOL_REMOTE_COMMAND_MAX_TIMEOUT = 120;  // seconds
++
++struct server_tool_remote_command : server_tool {
++    server_tool_remote_command() {
++        name = "remote_command";
++        display_name = "Run command on build machine";
++        permission_write = true;
++    }
++
++    json get_definition() const override {
++        return {
++            {"type", "function"},
++            {"function", {
++                {"name", name},
++                {"description", "Run a shell command on the remote build machine (Linux, sh -c) and return its exit code, stdout and stderr. "
++                                 "This machine is not the one the model runs on."},
++                {"parameters", {
++                    {"type", "object"},
++                    {"properties", {
++                        {"command", {{"type", "string"},  {"description", "Shell command to run"}}},
++                        {"timeout", {{"type", "integer"}, {"description", string_format("Timeout in seconds (default 30, max %d)", SERVER_TOOL_REMOTE_COMMAND_MAX_TIMEOUT)}}},
++                    }},
++                    {"required", json::array({"command"})},
++                }},
++            }},
++        };
++    }
++
++    static std::string clip(const std::string & text) {
++        if (text.size() <= SERVER_TOOL_EXEC_SHELL_COMMAND_MAX_OUTPUT_SIZE) {
++            return text;
++        }
++        return text.substr(0, SERVER_TOOL_EXEC_SHELL_COMMAND_MAX_OUTPUT_SIZE) +
++               string_format("\n[cut: %zu bytes in all]", text.size());
++    }
++
++    json invoke(json params, server_tool::stream *) const override {
++        const std::string command = params.at("command").get<std::string>();
++        const int timeout = std::clamp(json_value(params, "timeout", 30), 1, SERVER_TOOL_REMOTE_COMMAND_MAX_TIMEOUT);
++
++        const char * server = std::getenv("LLAMA_REMOTE_COMMAND");
++        if (!server || !*server) {
++            throw std::runtime_error("remote_command: no command server set (LLAMA_REMOTE_COMMAND)");
++        }
++        const std::string address = server;
++        const size_t colon = address.rfind(':');
++        if (colon == std::string::npos || colon == 0) {
++            throw std::runtime_error("remote_command: LLAMA_REMOTE_COMMAND must be host:port, not " + address);
++        }
++        const std::string host = address.substr(0, colon);
++        const int         port = std::atoi(address.c_str() + colon + 1);
++
++        if (ps5lm_remote_command) {
++            ps5lm_remote_command(command.c_str());
++        }
++
++        httplib::Client client(host, port);
++        client.set_connection_timeout(5, 0);
++        client.set_read_timeout(timeout + 10, 0);  // the server's own timeout ends the command first
++        client.set_write_timeout(10, 0);
++        httplib::Headers headers;
++        if (const char * token = std::getenv("LLAMA_REMOTE_COMMAND_TOKEN"); token && *token) {
++            headers.emplace("X-Command-Token", token);
++        }
++        const json body = {{"command", command}, {"timeout", timeout}};
++        auto res = client.Post("/run", headers, body.dump(), "application/json");
++        if (!res) {
++            throw std::runtime_error(string_format("remote_command: no answer from %s (%s)", address.c_str(),
++                                                   httplib::to_string(res.error()).c_str()));
++        }
++        json reply;
++        try {
++            reply = json::parse(res->body);
++        } catch (const std::exception &) {
++            reply = json();
++        }
++        if (!reply.is_object()) {
++            throw std::runtime_error(string_format("remote_command: %s answered HTTP %d, not JSON", address.c_str(), res->status));
++        }
++        const int exit_code = json_value(reply, "exit_code", -1);
++        std::string text = string_format("[exit code: %d]\n", exit_code);
++        const std::string out = json_value(reply, "stdout", std::string());
++        const std::string err = json_value(reply, "stderr", std::string());
++        if (!out.empty()) {
++            text += "stdout:\n" + clip(out) + (out.back() == '\n' ? "" : "\n");
++        }
++        if (!err.empty()) {
++            text += "stderr:\n" + clip(err) + (err.back() == '\n' ? "" : "\n");
++        }
++        return {{"plain_text_response", text}};
++    }
++};
++
++//
+ // write_file: create or overwrite a file
+ //
+ 
+@@ -1973,6 +2079,7 @@
+     tools.push_back(std::make_unique<server_tool_file_glob_search>());
+     tools.push_back(std::make_unique<server_tool_grep_search>());
+     tools.push_back(std::make_unique<server_tool_exec_shell_command>());
++    tools.push_back(std::make_unique<server_tool_remote_command>());  // PS5LM
+     tools.push_back(std::make_unique<server_tool_write_file>());
+     tools.push_back(std::make_unique<server_tool_edit_file>());
+     tools.push_back(std::make_unique<server_tool_get_info>());

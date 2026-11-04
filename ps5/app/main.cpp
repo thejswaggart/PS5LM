@@ -740,7 +740,16 @@ struct Models {
             std::filesystem::create_directories(g_files.scratch, ec);
             setenv("LLAMA_TOOLS_ROOT", g_files.scratch.c_str(), 1);
             chdir(g_files.scratch.c_str());
-            args.insert(args.end(), { "--tools", kTools });
+            // remote_command runs shell commands on the machine the setting names
+            // (patches/0010), as a title cannot start processes itself.
+            std::string tools = kTools;
+            if (!settings.remote_command.empty()) {
+                tools += ",remote_command";
+                setenv("LLAMA_REMOTE_COMMAND", settings.remote_command.c_str(), 1);
+                setenv("LLAMA_REMOTE_COMMAND_TOKEN", settings.remote_command_token.c_str(), 1);
+                ps5lm::log_line("remote_command: commands go to %s\n", settings.remote_command.c_str());
+            }
+            args.insert(args.end(), { "--tools", tools });
         }
         for (const auto & a : args) {
             ps5lm::log_line("arg %s\n", a.c_str());
@@ -807,6 +816,13 @@ bool load_font(hui::gfx::Renderer & renderer, const char * name, hui::gfx::Font 
 }
 
 }  // namespace
+
+// patches/0010's remote_command calls this (weak there) before each command it
+// sends, from a server thread: the TV says what the model is running.
+extern "C" void ps5lm_remote_command(const char * command) {
+    ps5lm::log_line("remote_command: %s\n", command);
+    notify((std::string("PS5LM runs: ") + command).c_str());
+}
 
 int main(int, char **) {
     // /data first: the log, the settings and the models live there when the
