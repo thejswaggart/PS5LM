@@ -21,8 +21,8 @@ v0.1.x are the upstream payload releases by cobanov.
   tool has no sort order, so "most recent" gets GitHub's best match.
 - **Context status and handoff notes**: `patches/0011` adds three tools to llama-server.
   `context_status` tells the browser chat's model how many tokens of its context it has used, and
-  each `remote_command` result ends with the same count. Past 70% (`LLAMA_HANDOFF_AT`) both ask
-  the model to call `save_handoff`, which writes a summary of its work to
+  each `remote_command` result ends with the same count. Past 70% (`LLAMA_HANDOFF_AT`) both tell
+  the model, in capitals as a model once ignored the quieter wording, to call `save_handoff`, which writes a summary of its work to
   `/data/PS5LM/scratch/handoff.md` (`LLAMA_HANDOFF_PATH`) with no path to give, and to tell the
   user to start a new conversation, where `load_handoff` reads it back. The count is not added
   to the chat prompt: with one prompt checkpoint (`-ctxcp 1`), a line there would make
