@@ -97,6 +97,9 @@ cmake -S "$llama" -B "$out/llama" -G Ninja \
     -ULLAMA_BUILD_WEBUI -ULLAMA_USE_PREBUILT_WEBUI \
     -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI="${PS5LM_PREBUILT_UI:-ON}" > "$out.configure.log" 2>&1 ||
     { tail -30 "$out.configure.log" >&2; exit 1; }
+# Put inline in the web UI's page as it is embedded (patches/0013): a chime when
+# the model has finished and waits for the user.
+export PS5LM_UI_SCRIPT="$root/ps5/app/ui/finished-sound.js"
 cmake --build "$out/llama" --target llama-server-impl
 
 # The app's own objects, and the title's start code from PS5_Vulkan.

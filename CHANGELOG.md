@@ -8,6 +8,17 @@ v0.1.x are the upstream payload releases by cobanov.
 ## [Unreleased]
 
 ### Added
+- **A chime when the model is done**: the browser chat plays a soft two-note chime when an answer
+  ends and the model waits for the user, and when it waits on an "Allow use of ...?" prompt. One
+  chime per wait: a tool loop that runs on its own, or a title request after the answer, stays
+  quiet until the end, and a stopped generation gives none. llama.cpp's UI is downloaded
+  prebuilt, so `patches/0013` has `scripts/ui-assets.cmake` put `ps5/app/ui/finished-sound.js`
+  inline in its `index.html` (and update the service worker's revision of the page, or a cached
+  UI keeps the old one); the script watches the page's streamed completions for their
+  `finish_reason`. The browser makes no sound before the first click or key press on the page.
+  Off in one browser with `localStorage.setItem("ps5lm.finishedSound", "off")`. Tried in a
+  browser against the console: one chime after an answer, one at a tool prompt, none in
+  between.
 - **github_search**: the browser chat's model can search GitHub's repositories, code, issues and
   pull requests, users and commits. `patches/0012` adds the tool to llama-server, which has no
   TLS on the PS5: it sends `{"type", "query", "limit"}` to `POST /github` on the command server
@@ -15,7 +26,8 @@ v0.1.x are the upstream payload releases by cobanov.
   GitHub's search API with its own token (`GITHUB_TOKEN` or `~/.config/ai_bridge/github_token`)
   and returns up to 10 results trimmed to names, URLs and a line or two each. Code search needs
   that token; the others work without it, 10 searches a minute instead of 30. On when
-  `remote_command` is set. The tool only reads, so the web UI does not ask before it runs.
+  `remote_command` is set. The tool only reads, but the web UI asks before each call all the
+  same: it asks for every server tool, the handoff tools too.
   Run on a console with Qwen3.6-35B-A3B UD-IQ1_M: code and issue searches answer, and asked for
   a repository's open issues, the model writes the query itself and answers from one call. The
   tool has no sort order, so "most recent" gets GitHub's best match.

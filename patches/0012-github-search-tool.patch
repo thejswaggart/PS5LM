@@ -11,7 +11,7 @@ diff --git a/tools/server/server-tools.cpp b/tools/server/server-tools.cpp
 +// remote_command (LLAMA_REMOTE_COMMAND, X-Command-Token), whose POST /github
 +// calls the REST search API with its own GitHub token and answers
 +// {"text", "total_count"} or {"error"}. llama-server on the PS5 has no TLS, and
-+// the token stays on that machine. It only reads, so it runs without asking.
++// the token stays on that machine. It only reads; the web UI still asks first.
 +//
 +
 +static constexpr int SERVER_TOOL_GITHUB_SEARCH_MAX_LIMIT = 10;

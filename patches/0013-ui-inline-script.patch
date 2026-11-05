@@ -1,0 +1,51 @@
+PS5LM: scripts/ui-assets.cmake puts the script PS5LM_UI_SCRIPT names inline in the web UI's index.html (ps5/app/ui/finished-sound.js: a chime when the model is done and waits for the user), and updates the service worker's revision of the page to match.
+
+diff --git a/scripts/ui-assets.cmake b/scripts/ui-assets.cmake
+--- a/scripts/ui-assets.cmake
++++ b/scripts/ui-assets.cmake
+@@ -143,8 +143,45 @@
+ 
+ # Generate ui.cpp/ui.h embedding every file of ${dist_dir} (empty table when
+ # it has no index.html), gzip-compressed when LLAMA_UI_GZIP is enabled.
++# PS5LM: put the script $ENV{PS5LM_UI_SCRIPT} names inline in index.html,
++# before </head>, between <!--ps5lm--> markers so a rebuild replaces it rather
++# than adding a second copy. The service worker precaches "./" by revision, so
++# that revision follows the new index.html, or a browser that has the UI cached
++# keeps serving the old page.
++function(ps5lm_inject_script dist_dir)
++    if(NOT DEFINED ENV{PS5LM_UI_SCRIPT} OR NOT EXISTS "${dist_dir}/index.html")
++        return()
++    endif()
++    if(NOT EXISTS "$ENV{PS5LM_UI_SCRIPT}")
++        message(FATAL_ERROR "UI: PS5LM_UI_SCRIPT=$ENV{PS5LM_UI_SCRIPT} does not exist")
++    endif()
++    file(READ "$ENV{PS5LM_UI_SCRIPT}" js)
++    file(READ "${dist_dir}/index.html" html)
++    string(REGEX REPLACE "<!--ps5lm-->.*<!--/ps5lm-->" "" stripped "${html}")
++    string(FIND "${stripped}" "</head>" at)
++    if(at LESS 0)
++        message(FATAL_ERROR "UI: no </head> in ${dist_dir}/index.html")
++    endif()
++    string(SUBSTRING "${stripped}" 0 ${at} head)
++    string(SUBSTRING "${stripped}" ${at} -1 rest)
++    set(injected "${head}<!--ps5lm--><script>\n${js}</script><!--/ps5lm-->${rest}")
++    if(NOT injected STREQUAL html)
++        file(WRITE "${dist_dir}/index.html" "${injected}")
++        message(STATUS "UI: PS5LM script put in ${dist_dir}/index.html")
++    endif()
++    if(EXISTS "${dist_dir}/sw.js")
++        file(MD5 "${dist_dir}/index.html" md5)
++        file(READ "${dist_dir}/sw.js" sw)
++        string(REGEX REPLACE "url:\"\\./\",revision:\"[0-9a-f]+\"" "url:\"./\",revision:\"${md5}\"" sw_new "${sw}")
++        if(NOT sw_new STREQUAL sw)
++            file(WRITE "${dist_dir}/sw.js" "${sw_new}")
++        endif()
++    endif()
++endfunction()
++
+ function(emit_files dist_dir)
+     set(UI_TEMPLATE_DIR "${LLAMA_SOURCE_DIR}/tools/ui")
++    ps5lm_inject_script("${dist_dir}")  # PS5LM
+ 
+     # Collect the asset list once and reuse it for the fingerprint,
+     # validation, compression and embedding.
