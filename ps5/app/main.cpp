@@ -744,11 +744,13 @@ struct Models {
             setenv("LLAMA_TOOLS_ROOT", g_files.scratch.c_str(), 1);
             chdir(g_files.scratch.c_str());
             // remote_command runs shell commands on the machine the setting names
-            // (patches/0010), as a title cannot start processes itself.
+            // (patches/0010), as a title cannot start processes itself, and
+            // github_search searches GitHub through it (patches/0012), as
+            // llama-server here has no TLS.
             std::string tools = std::string(settings.file_tools ? kFileTools : "") + kTools;
             setenv("LLAMA_HANDOFF_PATH", (g_files.scratch + "/handoff.md").c_str(), 1);
             if (!settings.remote_command.empty()) {
-                tools += ",remote_command";
+                tools += ",remote_command,github_search";
                 setenv("LLAMA_REMOTE_COMMAND", settings.remote_command.c_str(), 1);
                 setenv("LLAMA_REMOTE_COMMAND_TOKEN", settings.remote_command_token.c_str(), 1);
                 ps5lm::log_line("remote_command: commands go to %s\n", settings.remote_command.c_str());

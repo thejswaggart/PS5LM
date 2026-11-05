@@ -8,6 +8,17 @@ v0.1.x are the upstream payload releases by cobanov.
 ## [Unreleased]
 
 ### Added
+- **github_search**: the browser chat's model can search GitHub's repositories, code, issues and
+  pull requests, users and commits. `patches/0012` adds the tool to llama-server, which has no
+  TLS on the PS5: it sends `{"type", "query", "limit"}` to `POST /github` on the command server
+  `remote_command` uses (same address and token), and ai_bridge's `server_ubuntu26.py` calls
+  GitHub's search API with its own token (`GITHUB_TOKEN` or `~/.config/ai_bridge/github_token`)
+  and returns up to 10 results trimmed to names, URLs and a line or two each. Code search needs
+  that token; the others work without it, 10 searches a minute instead of 30. On when
+  `remote_command` is set. The tool only reads, so the web UI does not ask before it runs.
+  Run on a console with Qwen3.6-35B-A3B UD-IQ1_M: code and issue searches answer, and asked for
+  a repository's open issues, the model writes the query itself and answers from one call. The
+  tool has no sort order, so "most recent" gets GitHub's best match.
 - **Context status and handoff notes**: `patches/0011` adds three tools to llama-server.
   `context_status` tells the browser chat's model how many tokens of its context it has used, and
   each `remote_command` result ends with the same count. Past 70% (`LLAMA_HANDOFF_AT`) both ask

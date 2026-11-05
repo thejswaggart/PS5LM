@@ -1,0 +1,109 @@
+PS5LM: a github_search tool: the browser chat's model searches GitHub (repositories, code, issues, users, commits) through the command server's POST /github, which holds the GitHub token, as llama-server on the PS5 has no TLS.
+
+diff --git a/tools/server/server-tools.cpp b/tools/server/server-tools.cpp
+--- a/tools/server/server-tools.cpp
++++ b/tools/server/server-tools.cpp
+@@ -1813,6 +1813,95 @@
+ };
+ 
+ //
++// PS5LM: github_search: search GitHub through the same command server as
++// remote_command (LLAMA_REMOTE_COMMAND, X-Command-Token), whose POST /github
++// calls the REST search API with its own GitHub token and answers
++// {"text", "total_count"} or {"error"}. llama-server on the PS5 has no TLS, and
++// the token stays on that machine. It only reads, so it runs without asking.
++//
++
++static constexpr int SERVER_TOOL_GITHUB_SEARCH_MAX_LIMIT = 10;
++
++struct server_tool_github_search : server_tool {
++    server_tool_github_search() {
++        name = "github_search";
++        display_name = "Search GitHub";
++        permission_write = false;
++    }
++
++    json get_definition() const override {
++        return {
++            {"type", "function"},
++            {"function", {
++                {"name", name},
++                {"description", "Search GitHub's public repositories, code, issues and pull requests, users or commits. "
++                                "The query uses GitHub search syntax, e.g. \"llama.cpp vulkan language:C++ stars:>100\", "
++                                "\"repo:ggml-org/llama.cpp is:issue is:open crash\" or \"sceLncUtilLaunchApp extension:c\". "
++                                "Returns the matches with their URLs."},
++                {"parameters", {
++                    {"type", "object"},
++                    {"properties", {
++                        {"query", {{"type", "string"}, {"description", "GitHub search query"}}},
++                        {"type",  {{"type", "string"},
++                                   {"enum", json::array({"repositories", "code", "issues", "users", "commits"})},
++                                   {"description", "What to search; issues covers pull requests too (default: repositories)"}}},
++                        {"limit", {{"type", "integer"}, {"description", string_format(
++                                   "How many results, 1 to %d (default 5)", SERVER_TOOL_GITHUB_SEARCH_MAX_LIMIT)}}},
++                    }},
++                    {"required", json::array({"query"})},
++                }},
++            }},
++        };
++    }
++
++    json invoke(json params, server_tool::stream *) const override {
++        const std::string query = params.at("query").get<std::string>();
++        const std::string type  = json_value(params, "type", std::string("repositories"));
++        const int limit = std::clamp(json_value(params, "limit", 5), 1, SERVER_TOOL_GITHUB_SEARCH_MAX_LIMIT);
++
++        const char * server = std::getenv("LLAMA_REMOTE_COMMAND");
++        if (!server || !*server) {
++            throw std::runtime_error("github_search: no command server set (LLAMA_REMOTE_COMMAND)");
++        }
++        const std::string address = server;
++        const size_t colon = address.rfind(':');
++        if (colon == std::string::npos || colon == 0) {
++            throw std::runtime_error("github_search: LLAMA_REMOTE_COMMAND must be host:port, not " + address);
++        }
++
++        httplib::Client client(address.substr(0, colon), std::atoi(address.c_str() + colon + 1));
++        client.set_connection_timeout(5, 0);
++        client.set_read_timeout(60, 0);  // the server gives GitHub 20 s, twice
++        client.set_write_timeout(10, 0);
++        httplib::Headers headers;
++        if (const char * token = std::getenv("LLAMA_REMOTE_COMMAND_TOKEN"); token && *token) {
++            headers.emplace("X-Command-Token", token);
++        }
++        const json body = {{"type", type}, {"query", query}, {"limit", limit}};
++        auto res = client.Post("/github", headers, body.dump(), "application/json");
++        if (!res) {
++            throw std::runtime_error(string_format("github_search: no answer from %s (%s)", address.c_str(),
++                                                   httplib::to_string(res.error()).c_str()));
++        }
++        json reply;
++        try {
++            reply = json::parse(res->body);
++        } catch (const std::exception &) {
++            reply = json();
++        }
++        if (!reply.is_object()) {
++            throw std::runtime_error(string_format("github_search: %s answered HTTP %d, not JSON", address.c_str(), res->status));
++        }
++        // the command server's refusal of a wrong token comes as remote_command's {"stderr"}
++        const std::string error = json_value(reply, "error", json_value(reply, "stderr", std::string()));
++        if (res->status != 200 || !error.empty()) {
++            throw std::runtime_error("github_search: " + (error.empty() ? string_format("HTTP %d", res->status) : error));
++        }
++        return {{"plain_text_response", json_value(reply, "text", std::string())}};
++    }
++};
++
++//
+ // get_info: returns runtime info (OS name/version and cwd)
+ //
+ 
+@@ -2249,6 +2338,7 @@
+     //            for example, do not add: web search, get date time, etc.
+     //            high-level functionality should be added either via MCP or web UI
+     std::vector<std::unique_ptr<server_tool>> tools;
++    tools.push_back(std::make_unique<server_tool_github_search>());  // PS5LM
+     tools.push_back(std::make_unique<server_tool_read_file>());
+     tools.push_back(std::make_unique<server_tool_file_glob_search>());
+     tools.push_back(std::make_unique<server_tool_grep_search>());
