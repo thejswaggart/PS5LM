@@ -22,7 +22,7 @@ v0.1.x are the upstream payload releases by cobanov.
 - **github_search**: the browser chat's model can search GitHub's repositories, code, issues and
   pull requests, users and commits. `patches/0012` adds the tool to llama-server, which has no
   TLS on the PS5: it sends `{"type", "query", "limit"}` to `POST /github` on the command server
-  `remote_command` uses (same address and token), and ai_bridge's `server_ubuntu26.py` calls
+  `remote_command` uses (same address and token), and `scripts/server_ubuntu26.py` calls
   GitHub's search API with its own token (`GITHUB_TOKEN` or `~/.config/ai_bridge/github_token`)
   and returns up to 10 results trimmed to names, URLs and a line or two each. Code search needs
   that token; the others work without it, 10 searches a minute instead of 30. On when
@@ -49,8 +49,8 @@ v0.1.x are the upstream payload releases by cobanov.
   them off. Both apply at the next model load.
 - **remote_command**: the browser chat's model can run a shell command on another machine, as a
   PS5 title cannot start processes. `patches/0010` adds the tool to llama-server: it sends
-  `{"command", "timeout"}` to `POST /run` on a small command server (ai_bridge's
-  `server_ubuntu26.py`) and gives the model the exit code, stdout and stderr (16 KiB each at
+  `{"command", "timeout"}` to `POST /run` on a small command server
+  (`scripts/server_ubuntu26.py`) and gives the model the exit code, stdout and stderr (16 KiB each at
   most). Off unless `remote_command` in `settings.json` names the server as `host:port` (a
   numeric address); `remote_command_token` goes in `X-Command-Token` for the server to check.
   The web UI asks before each call, and the TV shows each command. This replaces ai_bridge's

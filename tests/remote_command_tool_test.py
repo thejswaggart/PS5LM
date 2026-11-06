@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """patches/0010 on a host llama-server: the remote_command tool sends the
-command to the command server (POST /run, ai_bridge's server_ubuntu26.py) and
+command to the command server (POST /run, scripts/server_ubuntu26.py) and
 gives the model its exit code, stdout and stderr.
 
 Run after scripts/build-fleet-host.sh. A stand-in command server here answers
