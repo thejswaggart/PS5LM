@@ -7,6 +7,13 @@ v0.1.x are the upstream payload releases by cobanov.
 
 ## [Unreleased]
 
+### Fixed
+- **Generation no longer flatlines on a log write**: the GPU driver prints a stats line from its
+  submission path, and a write to `app.log` on `/data` could block for 9-26 s with the driver's
+  lock held; each blocked print made the next one due, so generation stayed stopped until the app
+  restarted. `patches/mesa/0010` turns that line off unless `RADV_PS5_SUBMIT_STATS=1` is set in
+  `env.txt`.
+
 ### Added
 - **A chime when the model is done**: the browser chat plays a soft two-note chime when an answer
   ends and the model waits for the user, and when it waits on an "Allow use of ...?" prompt. One
