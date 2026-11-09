@@ -1158,7 +1158,6 @@ int main(int, char **) {
     bool was_serving = false;
     bool rescanning = false;
     uint64_t restart_at = 0;  // the frame to stop the model and restart on, or 0
-    bool     no_draw    = false;  // TEST: see /data/PS5LM/no-draw below
     for (uint64_t n = 0;; ++n) {
         const int64_t now = hui::sys::monotonic_us();
         const float dt = n == 0 ? 1.0f / 60.0f : std::min(0.05f, (float) (now - last) / 1e6f);
@@ -1440,28 +1439,14 @@ int main(int, char **) {
             restart_at = n + 3;  // three frames with the busy screen on the TV first
         }
 
-        // TEST: while /data/PS5LM/no-draw exists and the model generates, the
-        // dashboard neither draws nor swaps (the TV keeps its last frame), to
-        // see whether its drawing on the GPU is what stalls generation.
-        if (n % 60 == 20) {
-            const bool want = access(data_path("no-draw").c_str(), F_OK) == 0;
-            if (want != no_draw) {
-                ps5lm::log_line("no-draw %s\n", want ? "on: no frames while generating" : "off");
+        if (ui_ok) {
+            render();
+            if (n % 60 == 45 && !take_request_file(data_path("screenshot")).empty()) {
+                const bool ok = save_screen(data_path("screen.bmp").c_str(), display.width(), display.height());
+                ps5lm::log_line("screenshot %s\n", ok ? "saved" : "failed");
             }
-            no_draw = want;
         }
-        if (no_draw && live.state == ServerState::generating) {
-            sceKernelUsleep(16667);
-        } else {
-            if (ui_ok) {
-                render();
-                if (n % 60 == 45 && !take_request_file(data_path("screenshot")).empty()) {
-                    const bool ok = save_screen(data_path("screen.bmp").c_str(), display.width(), display.height());
-                    ps5lm::log_line("screenshot %s\n", ok ? "saved" : "failed");
-                }
-            }
-            display.swap();
-        }
+        display.swap();
         if (n % 60 == 0) {
             quit_if_asked();
         }
