@@ -8,13 +8,6 @@ v0.1.x are the upstream payload releases by cobanov.
 ## [Unreleased]
 
 ### Added
-- **The context warning reaches every session**: past `LLAMA_HANDOFF_AT` percent (70 by default)
-  each chat request now tells the model how full its context is, whichever tools it has been
-  calling, where before only `remote_command` results did. The web UI sends a request per tool
-  round, so one question followed by a long run of searches is covered. `patches/0014` counts the
-  rendered prompt, the newest tool result included, adds the warning to the last message for that
-  request only, and only when the request offers `save_handoff`. Once a note is saved it asks the
-  model to stop and tell the user to start a new conversation.
 - **A chime when the model is done**: the browser chat plays a soft two-note chime when an answer
   ends and the model waits for the user, and when it waits on an "Allow use of ...?" prompt. One
   chime per wait: a tool loop that runs on its own, or a title request after the answer, stays
