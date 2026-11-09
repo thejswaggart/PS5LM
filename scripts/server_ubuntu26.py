@@ -267,6 +267,7 @@ class Handler(BaseHTTPRequestHandler):
             
             # Execute the command
             try:
+                print(f"[INPUT] {command}")
                 result = subprocess.run(
                     command,
                     shell=True,
@@ -302,7 +303,6 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(response_bytes)
             
             # Log to stderr for debugging
-            print(f"[INPUT] {command}")
             print(f"[OUTPUT] Exit code: {response['exit_code']}")
             if response['stdout']:
                 print(f"[STDOUT] {response['stdout']}")
@@ -365,6 +365,8 @@ if __name__ == '__main__':
     server = HTTPServer((BIND, PORT), Handler)
     print(f"Server ready at http://{BIND}:{PORT}" + (" (token required)" if TOKEN else " (no token: anyone who can reach it can run commands)"))
     
+    os.chdir('/home/aipc')
+
     # Set up signal handlers (after server is created)
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)

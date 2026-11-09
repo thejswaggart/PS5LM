@@ -1,0 +1,445 @@
+diff --git a/common/common.cpp b/common/common.cpp
+index 04e348805..4c93af364 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -34,6 +34,11 @@
+ #include <unordered_set>
+ #include <vector>
+ 
++#if defined(__PROSPERO__)
++#include <pthread.h>
++extern "C" int scePthreadGetaffinity(pthread_t thread, uint64_t * mask);
++#endif
++
+ #if defined(__APPLE__) && defined(__MACH__)
+ #include <sys/types.h>
+ #include <sys/sysctl.h>
+@@ -204,6 +209,16 @@ static int cpu_count_math_cpus(int n_cpu) {
+  * Returns number of CPUs on system that are useful for math.
+  */
+ int32_t common_cpu_get_num_math() {
++#if defined(__PROSPERO__)
++    // PS5: a payload runs only on the cores its affinity mask allows (5 of 16 on
++    // firmware 13.60), and the console's own services share them. Keep two free:
++    // using all of them starves those services and the console shuts down.
++    uint64_t mask = 0;
++    if (scePthreadGetaffinity(pthread_self(), &mask) == 0 && mask != 0) {
++        return std::max(1, __builtin_popcountll(mask) - 2);
++    }
++    return 2;
++#endif
+ #if defined(__x86_64__) && defined(__linux__) && !defined(__ANDROID__)
+     int n_cpu = sysconf(_SC_NPROCESSORS_ONLN);
+     if (n_cpu < 1) {
+@@ -282,6 +297,11 @@ bool set_process_priority(enum ggml_sched_priority prio) {
+     if (prio == GGML_SCHED_PRIO_NORMAL) {
+         return true;
+     }
++#if defined(__PROSPERO__)
++    // PS5: what setpriority does to a payload is unknown. ggml lowers its own
++    // threads' Sony priority for --prio -1 and refuses to raise them.
++    return prio == GGML_SCHED_PRIO_LOW;
++#endif
+ 
+     int p = 0;
+     switch (prio) {
+diff --git a/common/common.h b/common/common.h
+index d0e33fb75..04645f795 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -76,7 +76,11 @@ struct common_cpu_params {
+     bool     mask_valid                  = false;   // Default: any CPU
+     enum ggml_sched_priority  priority   = GGML_SCHED_PRIO_NORMAL;  // Scheduling prio : (0 - normal, 1 - medium, 2 - high, 3 - realtime)
+     bool     strict_cpu                  = false;   // Use strict CPU placement
++#if defined(__PROSPERO__)
++    uint32_t poll                        = 0;       // PS5: no busy-waiting, the few cores a payload gets are shared with the system
++#else
+     uint32_t poll                        = 50;      // Polling (busywait) level (0 - no polling, 100 - mostly polling)
++#endif
+ };
+ 
+ int32_t common_cpu_get_num_physical_cores();
+diff --git a/common/log.cpp b/common/log.cpp
+index 25f12684e..51b3d28fd 100644
+--- a/common/log.cpp
++++ b/common/log.cpp
+@@ -204,6 +204,10 @@ private:
+     size_t head;
+     size_t tail;
+ 
++#if defined(__PROSPERO__)
++    size_t dropped = 0; // entries refused since the writer last caught up
++#endif
++
+     bool print_entry(const common_log_entry & e) const {
+         if (e.is_end) return true;
+ 
+@@ -239,8 +243,19 @@ public:
+     void add(enum ggml_log_level level, const char * fmt, va_list args) {
+         std::unique_lock<std::mutex> lock(mtx);
+ 
++#if defined(__PROSPERO__)
++        // PS5LM: never wait for the writer. It prints every line to stdout and
++        // to --log-file, and when that stalls a full queue froze the server
++        // thread mid-print_timings (/slots and /metrics hung, /health stayed
++        // 200). Drop the line and count it; the writer reports the count.
++        if (running && is_full()) {
++            dropped++;
++            return;
++        }
++#else
+         // block if the queue is full
+         cv_full.wait(lock, [this]() { return !running || !is_full(); });
++#endif
+ 
+         if (!running) {
+             // discard messages while the worker thread is paused
+@@ -306,8 +321,16 @@ public:
+ 
+         std::unique_lock<std::mutex> lock(mtx);
+ 
++#if defined(__PROSPERO__)
++        // PS5LM: drop instead of waiting, as in add()
++        if (running && is_full()) {
++            dropped++;
++            return;
++        }
++#else
+         // block if the queue is full
+         cv_full.wait(lock, [this]() { return !running || !is_full(); });
++#endif
+ 
+         if (!running) {
+             // discard messages while the worker thread is paused
+@@ -358,6 +381,23 @@ public:
+                 head = next_head;
+                 cv_full.notify_all();
+ 
++#if defined(__PROSPERO__)
++                // PS5LM: one line for everything add() dropped, once there is
++                // room for it. The loop prints it on the next pass.
++                if (dropped > 0 && !is_full()) {
++                    auto & entry = queue[tail];
++                    snprintf(entry.msg.data(), entry.msg.size(), "%zu log lines dropped, the log writer fell behind\n", dropped);
++                    entry.is_end    = false;
++                    entry.level     = GGML_LOG_LEVEL_WARN;
++                    entry.prefix    = prefix;
++                    entry.jsonl     = common_log_jsonl;
++                    entry.is_json   = false;
++                    entry.timestamp = timestamps ? t_us() - t_start : 0;
++                    tail = (tail + 1) % queue.size();
++                    dropped = 0;
++                }
++#endif
++
+                 if (stop) {
+                     break;
+                 }
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index f4eaea5df..4ff51d1cc 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -2714,6 +2714,51 @@ static bool ggml_thread_apply_priority(int32_t prio) {
+     return true;
+ }
+ 
++#elif defined(__PROSPERO__)
++
++// PS5: Sony's thread calls stand in for the Linux ones. A payload may only run
++// on the CPUs in its affinity mask (0xea00 on firmware 13.60), shared with the
++// console's own services, so a mask outside it fails and priority is only ever
++// lowered. Sony priorities run 256 (first) to 767 (last); threads start at 700.
++int scePthreadSetaffinity(pthread_t thread, uint64_t mask);
++int scePthreadSetprio(pthread_t thread, int prio);
++
++static bool ggml_thread_apply_affinity(const bool * mask) {
++    uint64_t bits = 0;
++    for (int i = 0; i < 64 && i < GGML_MAX_N_THREADS; i++) {
++        if (mask[i]) {
++            bits |= 1ull << i;
++        }
++    }
++
++    const int err = scePthreadSetaffinity(pthread_self(), bits);
++    if (err != 0) {
++        fprintf(stderr, "warn: failed to set affinity mask 0x%llx : 0x%08x\n", (unsigned long long) bits, (unsigned) err);
++        return false;
++    }
++
++    return true;
++}
++
++static bool ggml_thread_apply_priority(int32_t prio) {
++    if (prio == GGML_SCHED_PRIO_NORMAL) {
++        return true;
++    }
++    if (prio != GGML_SCHED_PRIO_LOW) {
++        // Spinning workers above the system's own threads starve them.
++        fprintf(stderr, "warn: thread priority %d is not raised on the PS5\n", prio);
++        return false;
++    }
++
++    const int err = scePthreadSetprio(pthread_self(), 720);
++    if (err != 0) {
++        fprintf(stderr, "warn: failed to lower thread priority : 0x%08x\n", (unsigned) err);
++        return false;
++    }
++
++    return true;
++}
++
+ #else // unsupported platforms
+ 
+ static bool ggml_thread_apply_affinity(const bool * mask) {
+@@ -3315,9 +3360,11 @@ static void ggml_graph_compute_kickoff(struct ggml_threadpool * threadpool, int
+     if (threadpool->pause) {
+        // Update main thread prio and affinity to match the threadpool settings
+        ggml_thread_apply_priority(threadpool->prio);
++#if !defined(__PROSPERO__) // PS5: see ggml_threadpool_new_impl
+        if (ggml_thread_cpumask_is_valid(threadpool->workers[0].cpumask)) {
+            ggml_thread_apply_affinity(threadpool->workers[0].cpumask);
+        }
++#endif
+ 
+        // resume does cond broadcast
+        ggml_threadpool_resume_locked(threadpool);
+@@ -3394,9 +3441,14 @@ static struct ggml_threadpool * ggml_threadpool_new_impl(
+     if (!threadpool->pause) {
+         // Update main thread prio and affinity at the start, otherwise we'll do it in resume
+         ggml_thread_apply_priority(threadpool->prio);
++#if !defined(__PROSPERO__)
++        // PS5: the calling thread keeps the whole mask. Threads it starts later
++        // inherit its affinity, so pinning it to one CPU would pin them too
++        // (PS5SX2 hit this with a ticker thread, commit f9abb4a).
+         if (ggml_thread_cpumask_is_valid(threadpool->workers[0].cpumask)) {
+             ggml_thread_apply_affinity(threadpool->workers[0].cpumask);
+         }
++#endif
+     }
+ #endif // GGML_USE_OPENMP
+ 
+diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
+index 311eb4f12..c66510f15 100644
+--- a/tools/server/server-common.cpp
++++ b/tools/server/server-common.cpp
+@@ -1410,6 +1410,54 @@ json oaicompat_chat_params_parse(
+     if (!messages.is_array()) {
+         throw std::invalid_argument("Expected 'messages' to be an array");
+     }
++
++    // PS5LM: templates such as Qwen's refuse a system message that is not
++    // first, and clients send them: Codex puts developer messages after its
++    // instructions, Claude Code puts system messages inside `messages`. Fold
++    // every later system or developer message into the leading one, for the
++    // Chat Completions, Responses and Anthropic endpoints alike.
++    {
++        const auto is_system = [](const json & m) {
++            const std::string r = json_value(m, "role", std::string());
++            return r == "system" || r == "developer";
++        };
++        json        kept = json::array();
++        std::string extra;
++        for (auto & m : messages) {
++            if (!kept.empty() && is_system(m)) {
++                const json c = m.contains("content") ? m.at("content") : json();
++                if (c.is_string()) {
++                    extra += "\n\n" + c.get<std::string>();
++                } else if (c.is_array()) {
++                    for (const auto & part : c) {
++                        if (part.contains("text")) {
++                            extra += "\n\n" + json_value(part, "text", std::string());
++                        }
++                    }
++                }
++                continue;
++            }
++            kept.push_back(std::move(m));
++        }
++        if (!extra.empty()) {
++            if (is_system(kept[0])) {
++                json & c = kept[0]["content"];
++                if (c.is_array()) {
++                    c.push_back({ { "type", "text" }, { "text", extra } });
++                } else {
++                    c = c.is_string() ? c.get<std::string>() + extra : extra.substr(2);
++                }
++            } else {
++                json front = json::array();
++                front.push_back({ { "role", "system" }, { "content", extra.substr(2) } });
++                for (auto & m : kept) {
++                    front.push_back(std::move(m));
++                }
++                kept = std::move(front);
++            }
++        }
++        messages = std::move(kept);
++    }
+     for (auto & msg : messages) {
+         std::string role = json_value(msg, "role", std::string());
+         if (role != "assistant" && !msg.contains("content")) {
+diff --git a/tools/server/server-http.cpp b/tools/server/server-http.cpp
+index cf147c7e7..8017afec8 100644
+--- a/tools/server/server-http.cpp
++++ b/tools/server/server-http.cpp
+@@ -10,6 +10,7 @@
+ #include <future>
+ #include <memory>
+ #include <string>
++#include <atomic>
+ #include <thread>
+ #include <mutex>
+ 
+@@ -24,6 +25,7 @@ public:
+     std::vector<std::thread> threads; // one thread per listener
+     std::unique_ptr<httplib::ThreadPool> pool; // single pool shared among all listeners
+     int n_threads_http = 0;
++    std::atomic<bool> stopping{false}; // stop() was asked: a listener that ends stays ended
+ };
+ 
+ class server_http_task_queue : public httplib::TaskQueue {
+@@ -51,6 +53,16 @@ server_http_context::~server_http_context() {
+     }
+ }
+ 
++// PS5LM: the app shows each request and what was answered on the TV. It
++// defines these; any other build leaves them null and nothing is called.
++extern "C" {
++__attribute__((weak)) void ps5lm_activity_begin(int id, const char * method, const char * path, const char * remote,
++                                                const char * body, size_t body_len);
++__attribute__((weak)) void ps5lm_activity_data(int id, const char * data, size_t len);
++__attribute__((weak)) void ps5lm_activity_end(int id, int status);
++}
++static std::atomic<int> ps5lm_activity_next{ 0 };
++
+ static void log_server_request(const httplib::Request & req, const httplib::Response & res) {
+     // skip logging requests that are regularly sent, to avoid log spam
+     if (req.path == "/health"
+@@ -529,9 +541,23 @@ bool server_http_context::start() {
+     pimpl->pool = std::make_unique<httplib::ThreadPool>(pimpl->n_threads_http, pimpl->n_threads_http + 1024);
+     for (size_t i = 0; i < pimpl->servers.size(); ++i) {
+         const auto & srv = pimpl->servers[i];
+-        pimpl->threads.emplace_back([srv = srv.get(), addr = listening_addresses[i]] {
+-            if (!srv->listen_after_bind()) {
+-                SRV_ERR("listener on %s stopped unexpectedly\n", addr.c_str());
++        // PS5LM: when the network drops (link down, a new DHCP address),
++        // accept() fails with an error httplib takes as fatal and closes the
++        // listening socket: the model stays loaded with nothing to reach it.
++        // Bind again, once a second, until it works or stop() is asked.
++        const std::string host = pimpl->hosts[i];
++        const int bind_port = port;
++        pimpl->threads.emplace_back([srv = srv.get(), addr = listening_addresses[i], host, bind_port,
++                                     stopping = &pimpl->stopping] {
++            while (!srv->listen_after_bind() && !*stopping) {
++                SRV_ERR("listener on %s stopped unexpectedly (errno %d); listening again\n", addr.c_str(), errno);
++                do {
++                    std::this_thread::sleep_for(std::chrono::seconds(1));
++                    srv->stop(); // clears the failed state; the socket is closed already
++                } while (!*stopping && !srv->bind_to_port(host, bind_port));
++                if (!*stopping) {
++                    SRV_INF("listener on %s is back\n", addr.c_str());
++                }
+             }
+         });
+         srv->wait_until_ready();
+@@ -547,6 +573,7 @@ bool server_http_context::start() {
+ }
+ 
+ void server_http_context::stop() const {
++    pimpl->stopping = true;
+     for (const auto & srv : pimpl->servers) {
+         if (srv) {
+             srv->stop();
+@@ -633,7 +660,8 @@ static std::string build_query_string(const httplib::Request & req) {
+ // using unique_ptr for request to allow safe capturing in lambdas
+ using server_http_req_ptr = std::unique_ptr<server_http_req>;
+ 
+-static void process_handler_response(server_http_req_ptr && request, server_http_res_ptr & response, httplib::Response & res) {
++static void process_handler_response(server_http_req_ptr && request, server_http_res_ptr & response, httplib::Response & res,
++                                     int activity = -1) {
+     if (response->is_stream()) {
+         res.status = response->status;
+         // Tell Nginx to not buffer any streamed response
+@@ -644,9 +672,12 @@ static void process_handler_response(server_http_req_ptr && request, server_http
+         std::shared_ptr<server_http_req> q_ptr = std::move(request);
+         std::shared_ptr<server_http_res> r_ptr = std::move(response);
+ 
+-        const auto chunked_content_provider = [response = r_ptr](size_t, httplib::DataSink & sink) -> bool {
++        const auto chunked_content_provider = [response = r_ptr, activity](size_t, httplib::DataSink & sink) -> bool {
+             std::string chunk;
+             const bool has_next = response->next(chunk);
++            if (!chunk.empty() && activity >= 0 && ps5lm_activity_data) {
++                ps5lm_activity_data(activity, chunk.data(), chunk.size());
++            }
+             if (!chunk.empty()) {
+                 if (!sink.write(chunk.data(), chunk.size())) {
+                     return false;
+@@ -659,7 +690,10 @@ static void process_handler_response(server_http_req_ptr && request, server_http
+             }
+             return has_next;
+         };
+-        const auto on_complete = [request = q_ptr, response = r_ptr](bool) mutable {
++        const auto on_complete = [request = q_ptr, response = r_ptr, activity](bool) mutable {
++            if (activity >= 0 && ps5lm_activity_end) {
++                ps5lm_activity_end(activity, response->status);
++            }
+             response->on_complete();
+             response.reset();
+             request.reset();
+@@ -669,6 +703,10 @@ static void process_handler_response(server_http_req_ptr && request, server_http
+         res.status = response->status;
+         set_headers(res, response->headers);
+         res.set_content(response->data, response->content_type);
++        if (activity >= 0 && ps5lm_activity_data && ps5lm_activity_end) {
++            ps5lm_activity_data(activity, response->data.data(), response->data.size());
++            ps5lm_activity_end(activity, response->status);
++        }
+         response->on_complete();
+     }
+ }
+@@ -736,8 +774,12 @@ void server_http_context::post(const std::string & path, const server_http_conte
+             std::move(files),
+             req.is_connection_closed
+         });
++        const int activity = ps5lm_activity_begin ? ps5lm_activity_next++ : -1;
++        if (activity >= 0) {
++            ps5lm_activity_begin(activity, "POST", req.path.c_str(), req.remote_addr.c_str(), body.data(), body.size());
++        }
+         server_http_res_ptr response = handler(*request);
+-        process_handler_response(std::move(request), response, res);
++        process_handler_response(std::move(request), response, res, activity);
+     };
+     const std::string full_path = path_prefix + path;
+     for (const auto & srv : pimpl->servers) {
+diff --git a/tools/server/server-tools.cpp b/tools/server/server-tools.cpp
+index ad6dd1d78..a18d6ef5f 100644
+--- a/tools/server/server-tools.cpp
++++ b/tools/server/server-tools.cpp
+@@ -322,6 +322,12 @@ public:
+         const std::string p = expand_home(path);
+ 
+         fs::path full = path_from_utf8(p);
++        // PS5LM: with LLAMA_TOOLS_ROOT set, a relative path starts there (a
++        // PS5 title cannot read its working directory).
++        const char * tools_root = std::getenv("LLAMA_TOOLS_ROOT");
++        if (!full.is_absolute() && tools_root && *tools_root) {
++            full = path_from_utf8(tools_root) / full;
++        }
+         if (!full.is_absolute()) {
+             if (cwd.empty()) {
+                 std::error_code ec;
+@@ -339,6 +345,15 @@ public:
+         if (!full.has_filename() && full != full.root_path()) {
+             full = full.parent_path();
+         }
++        // PS5LM: with LLAMA_TOOLS_ROOT set, the tools see that folder as the
++        // whole filesystem: a path outside it is taken as relative to it.
++        if (const char * root_env = std::getenv("LLAMA_TOOLS_ROOT"); root_env && *root_env) {
++            const fs::path root = path_from_utf8(root_env).lexically_normal();
++            const fs::path rel  = full.lexically_relative(root);
++            if (rel.empty() || *rel.begin() == "..") {
++                full = (root / full.relative_path()).lexically_normal();
++            }
++        }
+         return path_to_utf8(full);
+     }
+ 
