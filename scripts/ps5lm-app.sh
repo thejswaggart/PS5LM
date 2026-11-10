@@ -2,7 +2,9 @@
 # Drives the PS5LM app on the console from the PC, with no controller:
 #
 #   scripts/ps5lm-app.sh close     ask the running app to end itself, and wait
-#   scripts/ps5lm-app.sh deploy    upload build/app-ps5/title/<TITLE_ID> to where its mount.lnk points
+#   scripts/ps5lm-app.sh deploy    upload build/app-ps5/title/<TITLE_ID> to the USB drive
+#                                  (/mnt/usb0/homebrew/<TITLE_ID>, or where its mount.lnk points;
+#                                  PS5_DEPLOY_DIR=<console path> overrides both)
 #   scripts/ps5lm-app.sh launch    start it (build/app-ps5/launch-<TITLE_ID>.elf, from build-app.sh)
 #   scripts/ps5lm-app.sh cycle     close, deploy, launch
 #   scripts/ps5lm-app.sh screenshot [file]   what the TV shows, as a BMP
@@ -44,10 +46,11 @@ close() {
 
 deploy() {
     [ -f "$app/eboot.bin" ] || { echo "ps5lm-app: build it first (scripts/build-app.sh)" >&2; exit 1; }
-    # the folder the title is mounted from (its mount.lnk), e.g. on a USB drive
-    local dest
-    dest=$(curl -s "$ftp/user/app/$title/mount.lnk" | tr -d '\r\n')
-    case "$dest" in /*) ;; *) dest="/data/homebrew/$title" ;; esac
+    # PS5_DEPLOY_DIR if set, else the folder the title is mounted from (its
+    # mount.lnk), else the USB drive's homebrew folder
+    local dest=${PS5_DEPLOY_DIR:-}
+    [ -n "$dest" ] || dest=$(curl -s "$ftp/user/app/$title/mount.lnk" | tr -d '\r\n')
+    case "$dest" in /*) ;; *) dest="/mnt/usb0/homebrew/$title" ;; esac
     (cd "$app" && find . -type f | while read -r f; do
         curl -sS --ftp-create-dirs -T "$f" "$ftp$dest/${f#./}" ||
             { echo "ps5lm-app: upload of $f failed (is the app still running?)" >&2; exit 1; }
