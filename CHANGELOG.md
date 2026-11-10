@@ -15,21 +15,19 @@ v0.1.x are the upstream payload releases by cobanov.
   `env.txt`.
 
 ### Added
-- **The handoff is enforced**: a model that keeps working (a long run of searches, say) can no
-  longer fill its context without saving a handoff note. Past 70% (`LLAMA_HANDOFF_AT`) every
-  tool's result carries the warning, not only `remote_command`'s (`patches/0011`). Past 85%
-  (`LLAMA_HANDOFF_FORCE_AT`, or with under 4096 tokens left) llama-server makes the model's next
-  call `save_handoff`, and once the conversation's last tool call is `save_handoff`, past 70% the
-  model gets no more tool calls and can only answer (`patches/0014`). A note saved early and
-  followed by more work does not count: on the first console run a note saved at 57% turned the
-  tools off at 72%. With the tools off, the template's tool-call opener (`<tool_call>` on Qwen)
-  is banned when it is one token, so an attempted call no longer lands in the chat as text. Only the grammar changes, never the
-  prompt, so the cached conversation is not processed again: the warning that was reverted on
-  Nov 8 changed the prompt on every request. Tried on a PC llama-server with a stand-in model and
-  the Qwen3.5 template: forced at 90%, the call is `save_handoff` with other tools offered, the
-  forced request processes only its new tokens, and after a save tool calls are off. Not yet
-  tried on the console. A model can still write text before the forced call: llama.cpp's
-  "required" tool choice only stops it ending without one.
+- **Every tool result says how full the context is**: the count line `remote_command` results
+  end with now goes on every tool's result, the browser's MCP tools included, with the
+  capitalized save_handoff warning past 70% (`LLAMA_HANDOFF_AT`). llama-server's own tools add it
+  themselves (`patches/0011`); for the others it is added to the conversation as it arrives
+  (`patches/0014`), remembered by tool call and text, and put back on the same result in every
+  later request. The browser keeps the conversation without the line, and a prompt that changed
+  would be processed again from that point: the warning reverted on Nov 8 did that. The count is
+  the context at the end of the previous request, so it leaves out the result it is on. The
+  handoff tools' own results get no line. A first try instead forced a save_handoff call past 85%
+  and then took the tools away; on the console a note the model saved early turned the tools off
+  and its attempted calls landed in the chat as text, so it was dropped. Tried on a PC
+  llama-server with a stand-in model: an MCP-style result gets the line, the next request puts it
+  back unchanged and processes only its 245 new tokens, and a save_handoff result is left alone.
 - **A chime when the model is done**: the browser chat plays a soft two-note chime when an answer
   ends and the model waits for the user, and when it waits on an "Allow use of ...?" prompt. One
   chime per wait: a tool loop that runs on its own, or a title request after the answer, stays

@@ -1,0 +1,141 @@
+PS5LM: every tool result the model reads ends with how full its context is, also the ones the browser runs (MCP servers): the line is remembered and put back on the same result in every later request, so the cached prompt stays valid.
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 0b4e5e530..a8c31ceb4 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -30,6 +30,8 @@
+ #include <filesystem>
+ #include <random>
+ #include <utility>
++#include <mutex>
++#include <unordered_map>
+ #include <fstream>
+ 
+ // fix problem with std::min and std::max
+@@ -5870,6 +5872,103 @@ json server_routes::get_model_info() const {
+     return get_res_model_info(*meta);
+ }
+ 
++// PS5LM: every tool result the model reads ends with how full its context is,
++// whichever tool wrote it: llama-server's own tools add the line themselves
++// (server-tools.cpp), and here it goes on the rest, such as the MCP servers the
++// browser runs. The browser keeps the conversation without the line, so each
++// line added is remembered by the tool call's id and the result's text and put
++// back on the same result in every later request: a prompt that changed would
++// be processed again from that point, slowly on the console.
++std::string ps5lm_context_note();  // server-tools.cpp: the count, and past LLAMA_HANDOFF_AT the warning
++
++static std::string ps5lm_content_text(const json & content) {
++    if (content.is_string()) {
++        return content.get<std::string>();
++    }
++    std::string text;
++    if (content.is_array()) {
++        for (const json & part : content) {
++            if (part.is_object() && part.value("type", std::string()) == "text") {
++                text += part.value("text", std::string());
++            }
++        }
++    }
++    return text;
++}
++
++static void ps5lm_note_tool_results(json & body) {
++    static std::mutex mutex;
++    static std::unordered_map<std::string, std::string> notes;
++    if (!body.contains("messages") || !body.at("messages").is_array()) {
++        return;
++    }
++    json & messages = body.at("messages");
++    // the results at the end, after the model's last call, are new in this request
++    size_t first_new = messages.size();
++    while (first_new > 0 && messages[first_new - 1].is_object()
++            && messages[first_new - 1].value("role", std::string()) == "tool") {
++        first_new--;
++    }
++    std::unordered_map<std::string, std::string> call_names;  // tool call id -> tool name
++    std::string fresh;
++    bool fresh_made = false;
++    std::lock_guard<std::mutex> lock(mutex);
++    for (size_t i = 0; i < messages.size(); i++) {
++        json & message = messages[i];
++        if (!message.is_object()) {
++            continue;
++        }
++        const std::string role = message.value("role", std::string());
++        if (role == "assistant" && message.contains("tool_calls") && message.at("tool_calls").is_array()) {
++            for (const json & call : message.at("tool_calls")) {
++                if (call.is_object() && call.contains("function") && call.at("function").is_object()) {
++                    call_names[call.value("id", std::string())] = call.at("function").value("name", std::string());
++                }
++            }
++        }
++        if (role != "tool" || !message.contains("content")) {
++            continue;
++        }
++        json & content = message.at("content");
++        if (!content.is_string() && !content.is_array()) {
++            continue;
++        }
++        const std::string id = message.value("tool_call_id", std::string());
++        const std::string name = call_names.count(id) ? call_names[id] : std::string();
++        const std::string text = ps5lm_content_text(content);
++        // the handoff tools say it themselves, and llama-server's tools may have
++        if (name == "context_status" || name == "save_handoff" || name == "load_handoff"
++                || text.find("[context: ") != std::string::npos) {
++            continue;
++        }
++        const std::string key = id + '\x1f' + std::to_string(std::hash<std::string>{}(text));
++        std::string note;
++        if (auto it = notes.find(key); it != notes.end()) {
++            note = it->second;
++        } else if (i >= first_new) {
++            if (!fresh_made) {
++                fresh = ps5lm_context_note();
++                fresh_made = true;
++            }
++            if (fresh.empty()) {
++                continue;
++            }
++            if (notes.size() >= 4096) {
++                notes.clear();  // old conversations: at worst processed once more
++            }
++            note = fresh;
++            notes.emplace(key, note);
++        } else {
++            continue;
++        }
++        if (content.is_string()) {
++            content = content.get<std::string>() + note;
++        } else {
++            content.push_back({{"type", "text"}, {"text", note}});
++        }
++    }
++}
++
+ void server_routes::init_routes() {
+     // IMPORTANT: all lambda functions must start with create_response()
+     // this is to ensure that the server_res_generator can handle sleeping case correctly
+@@ -6154,6 +6253,7 @@ void server_routes::init_routes() {
+         auto res = create_response();
+         std::vector<raw_buffer> files;
+         json body = json::parse(req.body);
++        ps5lm_note_tool_results(body);  // PS5LM: see above
+         common_chat_session session;
+         json body_parsed = oaicompat_chat_params_parse(
+             ctx_server.vocab,
+diff --git a/tools/server/server-tools.cpp b/tools/server/server-tools.cpp
+index 97778097b..9c545b105 100644
+--- a/tools/server/server-tools.cpp
++++ b/tools/server/server-tools.cpp
+@@ -2578,3 +2578,9 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
+         return res;
+     };
+ }
++
++// PS5LM: what server-context.cpp adds to a tool result llama-server did not write
++std::string ps5lm_context_note();
++std::string ps5lm_context_note() {
++    return ps5lm_context_line();
++}
