@@ -15,6 +15,18 @@ v0.1.x are the upstream payload releases by cobanov.
   `env.txt`.
 
 ### Added
+- **The handoff is enforced**: a model that keeps working (a long run of searches, say) can no
+  longer fill its context without saving a handoff note. Past 70% (`LLAMA_HANDOFF_AT`) every
+  tool's result carries the warning, not only `remote_command`'s (`patches/0011`). Past 85%
+  (`LLAMA_HANDOFF_FORCE_AT`, or with under 4096 tokens left) llama-server makes the model's next
+  call `save_handoff`, and once the conversation has saved a note, past 70% the model gets no
+  more tool calls and can only answer (`patches/0014`). Only the grammar changes, never the
+  prompt, so the cached conversation is not processed again: the warning that was reverted on
+  Nov 8 changed the prompt on every request. Tried on a PC llama-server with a stand-in model and
+  the Qwen3.5 template: forced at 90%, the call is `save_handoff` with other tools offered, the
+  forced request processes only its new tokens, and after a save tool calls are off. Not yet
+  tried on the console. A model can still write text before the forced call: llama.cpp's
+  "required" tool choice only stops it ending without one.
 - **A chime when the model is done**: the browser chat plays a soft two-note chime when an answer
   ends and the model waits for the user, and when it waits on an "Allow use of ...?" prompt. One
   chime per wait: a tool loop that runs on its own, or a title request after the answer, stays

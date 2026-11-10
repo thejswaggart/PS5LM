@@ -1,0 +1,131 @@
+PS5LM: past LLAMA_HANDOFF_AT percent a chat request that offers save_handoff is held to the handoff: past LLAMA_HANDOFF_FORCE_AT percent (default 85) the model must call save_handoff, and once the conversation has one it gets no tool calls. Only the grammar changes, so the cached prompt stays valid.
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 0b4e5e530..5b7c8c4ff 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -5870,6 +5870,81 @@ json server_routes::get_model_info() const {
+     return get_res_model_info(*meta);
+ }
+ 
++// PS5LM: past LLAMA_HANDOFF_AT percent a chat request that offers save_handoff
++// is held to the handoff. Past LLAMA_HANDOFF_FORCE_AT the model's next output
++// must be a save_handoff call, and once the conversation has one it gets no
++// tool calls at all, only an answer. Only the grammar changes: the prompt stays
++// the one rendered with every tool the request offers, so it matches the cached
++// prompt and nothing is processed again.
++int ps5lm_handoff_stage(int n_tokens, bool saved);  // server-tools.cpp
++
++static json ps5lm_chat_params_parse(
++        const llama_vocab * vocab,
++        json & body,
++        const server_chat_params & opt,
++        std::vector<raw_buffer> & files,
++        common_chat_session & session) {
++    static const auto is_save_handoff = [](const json & tool) {
++        return tool.is_object() && tool.contains("function") && tool.at("function").is_object()
++            && tool.at("function").value("name", std::string()) == "save_handoff";
++    };
++    json request = body;  // the parser may change what it is given
++    json parsed = oaicompat_chat_params_parse(vocab, body, opt, files, session);
++    const int size = ps5lm_ctx_size.load();
++    if (size <= 0 || !request.contains("tools") || !request.at("tools").is_array()
++            || !request.contains("messages") || !request.at("messages").is_array()
++            || !parsed.contains("prompt") || !parsed.at("prompt").is_string()) {
++        return parsed;
++    }
++    json save_handoff;
++    for (const json & tool : request.at("tools")) {
++        if (is_save_handoff(tool)) {
++            save_handoff = tool;
++        }
++    }
++    if (save_handoff.is_null()) {
++        return parsed;
++    }
++    bool saved = false;
++    for (const json & message : request.at("messages")) {
++        if (message.is_object() && message.contains("tool_calls") && message.at("tool_calls").is_array()) {
++            saved = saved || std::any_of(message.at("tool_calls").begin(), message.at("tool_calls").end(), is_save_handoff);
++        }
++    }
++    // a prompt has no more tokens than bytes: when its length could not make
++    // the handoff due, its tokens are not counted, which takes time on the console
++    const std::string prompt = parsed.at("prompt").get<std::string>();
++    if (ps5lm_handoff_stage((int) std::min<size_t>(prompt.size(), INT32_MAX), saved) == 0) {
++        return parsed;
++    }
++    const int n_tokens = (int) common_tokenize(vocab, prompt, false, true).size();
++    const int stage = ps5lm_handoff_stage(n_tokens, saved);
++    if (stage == 0) {
++        return parsed;
++    }
++    if (stage == 1) {
++        request["tools"] = json::array({save_handoff});
++        request["tool_choice"] = "required";
++        request["parallel_tool_calls"] = false;
++    } else {
++        request["tool_choice"] = "none";
++    }
++    try {
++        std::vector<raw_buffer> held_files;
++        common_chat_session held;
++        json out = oaicompat_chat_params_parse(vocab, request, opt, held_files, held);
++        out["prompt"] = parsed.at("prompt");
++        files   = std::move(held_files);
++        session = std::move(held);
++        SRV_INF("PS5LM: prompt is %d of %d tokens, %s\n", n_tokens, size,
++                stage == 1 ? "the model must call save_handoff" : "handoff saved, no more tool calls");
++        return out;
++    } catch (const std::exception & e) {
++        SRV_WRN("PS5LM: cannot hold the request to the handoff: %s\n", e.what());
++        return parsed;
++    }
++}
++
+ void server_routes::init_routes() {
+     // IMPORTANT: all lambda functions must start with create_response()
+     // this is to ensure that the server_res_generator can handle sleeping case correctly
+@@ -6155,7 +6230,7 @@ void server_routes::init_routes() {
+         std::vector<raw_buffer> files;
+         json body = json::parse(req.body);
+         common_chat_session session;
+-        json body_parsed = oaicompat_chat_params_parse(
++        json body_parsed = ps5lm_chat_params_parse(
+             ctx_server.vocab,
+             body,
+             meta->chat_params,
+diff --git a/tools/server/server-tools.cpp b/tools/server/server-tools.cpp
+index 97778097b..e62f217ae 100644
+--- a/tools/server/server-tools.cpp
++++ b/tools/server/server-tools.cpp
+@@ -2578,3 +2578,29 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
+         return res;
+     };
+ }
++
++// PS5LM: what ps5lm_chat_params_parse in server-context.cpp does with a chat
++// request whose prompt is n_tokens long: 0 nothing, 1 the model must call
++// save_handoff, 2 no tool calls as the conversation has saved its note. Both
++// only once save_handoff is due (LLAMA_HANDOFF_AT); the call is forced past
++// LLAMA_HANDOFF_FORCE_AT percent (default 85), or with under 4096 tokens left.
++int ps5lm_handoff_stage(int n_tokens, bool saved);
++int ps5lm_handoff_stage(int n_tokens, bool saved) {
++    const int size = ps5lm_ctx_size.load();
++    if (size <= 0) {
++        return 0;
++    }
++    const int pct = (int) ((int64_t) n_tokens * 100 / size);
++    if (pct < ps5lm_handoff_at()) {
++        return 0;
++    }
++    if (saved) {
++        return 2;
++    }
++    const char * at = std::getenv("LLAMA_HANDOFF_FORCE_AT");
++    int force_at = at && *at ? std::atoi(at) : 85;
++    if (force_at <= 0 || force_at > 100) {
++        force_at = 85;
++    }
++    return pct >= force_at || size - n_tokens < 4096 ? 1 : 0;
++}

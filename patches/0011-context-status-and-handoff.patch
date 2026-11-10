@@ -1,6 +1,7 @@
-PS5LM: context_status, save_handoff and load_handoff tools: the model sees how full its context is (also after each remote_command result) and, past LLAMA_HANDOFF_AT percent, saves a handoff note to LLAMA_HANDOFF_PATH for the next conversation.
+PS5LM: context_status, save_handoff and load_handoff tools: the model sees how full its context is (after each remote_command result, and past LLAMA_HANDOFF_AT percent after every tool result) and saves a handoff note to LLAMA_HANDOFF_PATH for the next conversation.
 
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 6dba147c4..0b4e5e530 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
 @@ -41,6 +41,10 @@
@@ -14,7 +15,7 @@ diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
  constexpr int HTTP_POLLING_SECONDS = 1;
  
  static common_speculative_output_limits server_output_limits(const common_params & params) {
-@@ -658,6 +662,9 @@
+@@ -658,6 +662,9 @@ struct server_slot {
              GGML_ASSERT(task);
  
              SLT_INF(*this, "stop processing: n_tokens = %d, truncated = %d\n", prompt.n_tokens(), truncated);
@@ -24,7 +25,7 @@ diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
  
              t_last_used = ggml_time_us();
  
-@@ -1559,6 +1566,7 @@
+@@ -1559,6 +1566,7 @@ private:
              slot.mem.init(ctx_tgt, ctx_dft);
              slot.spec    = spec.get();
              slot.n_ctx   = n_ctx_slot();
@@ -33,9 +34,10 @@ diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
              slot.mctx                   = mctx;
              slot.prompt.tokens.has_mtmd = mctx != nullptr;
 diff --git a/tools/server/server-tools.cpp b/tools/server/server-tools.cpp
+index e4d941509..b090b2744 100644
 --- a/tools/server/server-tools.cpp
 +++ b/tools/server/server-tools.cpp
-@@ -2069,6 +2069,180 @@
+@@ -2069,6 +2069,194 @@ static server_tool & find_tool(std::vector<std::unique_ptr<server_tool>> & tools
  // public API
  //
  
@@ -77,6 +79,20 @@ diff --git a/tools/server/server-tools.cpp b/tools/server/server-tools.cpp
 +                "OF THE WORK SO FAR AND WHAT IS LEFT, AND TELL THE USER TO START A NEW CONVERSATION!!]\n";
 +    }
 +    return line;
++}
++
++// what a tool's result ends with: the count for remote_command, and for the
++// others the count and warning only once save_handoff is due. Nothing for the
++// handoff tools, which say it themselves.
++static std::string ps5lm_tool_note(const std::string & tool_name) {
++    if (tool_name == "remote_command") {
++        return ps5lm_context_line();
++    }
++    if (tool_name == "context_status" || tool_name == "save_handoff" || tool_name == "load_handoff") {
++        return "";
++    }
++    const std::string line = ps5lm_context_line();
++    return line.find("[WARNING") != std::string::npos ? line : "";
 +}
 +
 +static std::string ps5lm_handoff_path() {
@@ -216,7 +232,7 @@ diff --git a/tools/server/server-tools.cpp b/tools/server/server-tools.cpp
  static std::vector<std::unique_ptr<server_tool>> build_tools() {
      // IMPORTANT: for contributors, please keep this array of tools as minimal as possible
      //            we only accept minimal i/o and shell command tools here
-@@ -2083,6 +2257,9 @@
+@@ -2083,6 +2271,9 @@ static std::vector<std::unique_ptr<server_tool>> build_tools() {
      tools.push_back(std::make_unique<server_tool_write_file>());
      tools.push_back(std::make_unique<server_tool_edit_file>());
      tools.push_back(std::make_unique<server_tool_get_info>());
@@ -226,13 +242,14 @@ diff --git a/tools/server/server-tools.cpp b/tools/server/server-tools.cpp
      return tools;
  }
  
-@@ -2275,6 +2452,10 @@
+@@ -2275,6 +2466,11 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
                  };
              } else {
                  json result = tool.invoke(params, nullptr);
-+                // PS5LM: each command's result says how full the model's context is
-+                if (tool_name == "remote_command" && result.contains("plain_text_response")) {
-+                    result["plain_text_response"] = result["plain_text_response"].get<std::string>() + ps5lm_context_line();
++                // PS5LM: each command's result says how full the model's context is, and
++                // past LLAMA_HANDOFF_AT every other tool's result carries the warning too
++                if (result.contains("plain_text_response") && result.at("plain_text_response").is_string()) {
++                    result["plain_text_response"] = result["plain_text_response"].get<std::string>() + ps5lm_tool_note(tool_name);
 +                }
                  res->status = 200;
                  res->data   = safe_json_to_str(result);
