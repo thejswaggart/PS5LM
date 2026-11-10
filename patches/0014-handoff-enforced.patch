@@ -1,10 +1,10 @@
 PS5LM: past LLAMA_HANDOFF_AT percent a chat request that offers save_handoff is held to the handoff: past LLAMA_HANDOFF_FORCE_AT percent (default 85) the model must call save_handoff, and once the conversation has one it gets no tool calls. Only the grammar changes, so the cached prompt stays valid.
 
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 0b4e5e530..5b7c8c4ff 100644
+index 0b4e5e530..2cfd7a11b 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -5870,6 +5870,81 @@ json server_routes::get_model_info() const {
+@@ -5870,6 +5870,108 @@ json server_routes::get_model_info() const {
      return get_res_model_info(*meta);
  }
  
@@ -43,10 +43,13 @@ index 0b4e5e530..5b7c8c4ff 100644
 +    if (save_handoff.is_null()) {
 +        return parsed;
 +    }
++    // saved: the conversation's last tool call is save_handoff, so a note saved
++    // early and followed by more work does not count
 +    bool saved = false;
 +    for (const json & message : request.at("messages")) {
-+        if (message.is_object() && message.contains("tool_calls") && message.at("tool_calls").is_array()) {
-+            saved = saved || std::any_of(message.at("tool_calls").begin(), message.at("tool_calls").end(), is_save_handoff);
++        if (message.is_object() && message.contains("tool_calls") && message.at("tool_calls").is_array()
++                && !message.at("tool_calls").empty()) {
++            saved = is_save_handoff(message.at("tool_calls").back());
 +        }
 +    }
 +    // a prompt has no more tokens than bytes: when its length could not make
@@ -67,15 +70,39 @@ index 0b4e5e530..5b7c8c4ff 100644
 +    } else {
 +        request["tool_choice"] = "none";
 +    }
++    // with no tool calls, a model that still opens one would print it as text:
++    // ban the template's tool-call opener when it is a single token
++    std::vector<llama_token> banned;
++    if (stage == 2) {
++        common_params_sampling sampling;
++        session.apply_sampling(sampling);
++        for (const auto & trigger : sampling.grammar_triggers) {
++            if (trigger.token != LLAMA_TOKEN_NULL) {
++                banned.push_back(trigger.token);
++            } else if (trigger.type == COMMON_GRAMMAR_TRIGGER_TYPE_WORD) {
++                const auto ids = common_tokenize(vocab, trigger.value, false, true);
++                if (ids.size() == 1) {
++                    banned.push_back(ids[0]);
++                }
++            }
++        }
++    }
 +    try {
 +        std::vector<raw_buffer> held_files;
 +        common_chat_session held;
 +        json out = oaicompat_chat_params_parse(vocab, request, opt, held_files, held);
 +        out["prompt"] = parsed.at("prompt");
++        if (!banned.empty()) {
++            json bias = out.contains("logit_bias") && out.at("logit_bias").is_array() ? out.at("logit_bias") : json::array();
++            for (llama_token id : banned) {
++                bias.push_back(json::array({id, false}));
++            }
++            out["logit_bias"] = bias;
++        }
 +        files   = std::move(held_files);
 +        session = std::move(held);
-+        SRV_INF("PS5LM: prompt is %d of %d tokens, %s\n", n_tokens, size,
-+                stage == 1 ? "the model must call save_handoff" : "handoff saved, no more tool calls");
++        SRV_INF("PS5LM: prompt is %d of %d tokens, %s (%zu tool-call tokens banned)\n", n_tokens, size,
++                stage == 1 ? "the model must call save_handoff" : "handoff saved, no more tool calls", banned.size());
 +        return out;
 +    } catch (const std::exception & e) {
 +        SRV_WRN("PS5LM: cannot hold the request to the handoff: %s\n", e.what());
@@ -86,7 +113,7 @@ index 0b4e5e530..5b7c8c4ff 100644
  void server_routes::init_routes() {
      // IMPORTANT: all lambda functions must start with create_response()
      // this is to ensure that the server_res_generator can handle sleeping case correctly
-@@ -6155,7 +6230,7 @@ void server_routes::init_routes() {
+@@ -6155,7 +6257,7 @@ void server_routes::init_routes() {
          std::vector<raw_buffer> files;
          json body = json::parse(req.body);
          common_chat_session session;

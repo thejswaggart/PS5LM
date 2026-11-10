@@ -19,8 +19,11 @@ v0.1.x are the upstream payload releases by cobanov.
   longer fill its context without saving a handoff note. Past 70% (`LLAMA_HANDOFF_AT`) every
   tool's result carries the warning, not only `remote_command`'s (`patches/0011`). Past 85%
   (`LLAMA_HANDOFF_FORCE_AT`, or with under 4096 tokens left) llama-server makes the model's next
-  call `save_handoff`, and once the conversation has saved a note, past 70% the model gets no
-  more tool calls and can only answer (`patches/0014`). Only the grammar changes, never the
+  call `save_handoff`, and once the conversation's last tool call is `save_handoff`, past 70% the
+  model gets no more tool calls and can only answer (`patches/0014`). A note saved early and
+  followed by more work does not count: on the first console run a note saved at 57% turned the
+  tools off at 72%. With the tools off, the template's tool-call opener (`<tool_call>` on Qwen)
+  is banned when it is one token, so an attempted call no longer lands in the chat as text. Only the grammar changes, never the
   prompt, so the cached conversation is not processed again: the warning that was reverted on
   Nov 8 changed the prompt on every request. Tried on a PC llama-server with a stand-in model and
   the Qwen3.5 template: forced at 90%, the call is `save_handoff` with other tools offered, the
