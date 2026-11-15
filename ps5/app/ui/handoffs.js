@@ -2,6 +2,7 @@
 // with save_handoff (GET tools?list=handoffs, from patches/0011), newest first,
 // without asking the model. Clicking a note puts "Load the handoff ..." in the
 // message box, to send or change; nothing reaches the model until it is sent.
+// The arrow beside a note opens it in a new tab to read (GET tools?handoff=).
 // scripts/build-app.sh has patches/0013 put this file inline in the web UI.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -29,6 +30,11 @@
         "#ps5lm-handoffs .n{display:block;width:100%;text-align:left;border:0;background:none;color:inherit;" +
         "cursor:pointer;padding:8px;border-radius:7px;font:inherit}" +
         "#ps5lm-handoffs .n:hover,#ps5lm-handoffs .n:focus{background:rgba(128,128,128,.16);outline:none}" +
+        "#ps5lm-handoffs .r{display:flex;align-items:center;gap:2px}" +
+        "#ps5lm-handoffs .r .n{flex:1;min-width:0}" +
+        "#ps5lm-handoffs .o{flex:none;width:34px;height:34px;display:flex;align-items:center;" +
+        "justify-content:center;border-radius:7px;color:inherit;text-decoration:none;font-size:16px;opacity:.6}" +
+        "#ps5lm-handoffs .o:hover,#ps5lm-handoffs .o:focus{opacity:1;background:rgba(128,128,128,.16);outline:none}" +
         "#ps5lm-handoffs .m{display:block;font-size:12px;opacity:.65;margin-top:2px}" +
         "#ps5lm-handoffs .e{padding:8px;opacity:.7}";
 
@@ -133,6 +139,7 @@
             panel.appendChild(el("div", "e", "No handoff notes saved yet."));
         }
         (items || []).forEach(function (h) {
+            var row = el("div", "r");
             var b = el("button", "n", h.name);
             b.appendChild(el("span", "m", ago(h.modified) + " · " + size(h.bytes)));
             b.title = "Put “Load the handoff " + h.name + "” in the message box";
@@ -141,7 +148,14 @@
                     close();
                 }
             };
-            panel.appendChild(b);
+            var o = el("a", "o", "↗");
+            o.href = "./tools?handoff=" + encodeURIComponent(h.name);
+            o.target = "_blank";
+            o.rel = "noopener";
+            o.title = "Read it in a new tab";
+            row.appendChild(b);
+            row.appendChild(o);
+            panel.appendChild(row);
         });
         document.body.appendChild(panel);
     }

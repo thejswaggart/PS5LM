@@ -1,4 +1,4 @@
-PS5LM: context_status, save_handoff and load_handoff tools: the model sees how full its context is (after each remote_command result, and past LLAMA_HANDOFF_AT percent after every tool result) and saves handoff notes by name, in LLAMA_HANDOFF_DIR (default: a handoffs folder beside LLAMA_HANDOFF_PATH, whose single note is moved in), for later conversations. GET /tools?list=handoffs lists them for the web UI.
+PS5LM: context_status, save_handoff and load_handoff tools: the model sees how full its context is (after each remote_command result, and past LLAMA_HANDOFF_AT percent after every tool result) and saves handoff notes by name, in LLAMA_HANDOFF_DIR (default: a handoffs folder beside LLAMA_HANDOFF_PATH, whose single note is moved in), for later conversations. GET /tools?list=handoffs lists them for the web UI, and GET /tools?handoff=<name> shows one as a page.
 
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
 index 6dba147c4..0b4e5e530 100644
@@ -34,10 +34,10 @@ index 6dba147c4..0b4e5e530 100644
              slot.mctx                   = mctx;
              slot.prompt.tokens.has_mtmd = mctx != nullptr;
 diff --git a/tools/server/server-tools.cpp b/tools/server/server-tools.cpp
-index e4d941509..5673f04c4 100644
+index e4d941509..d0a65e4be 100644
 --- a/tools/server/server-tools.cpp
 +++ b/tools/server/server-tools.cpp
-@@ -2069,6 +2069,284 @@ static server_tool & find_tool(std::vector<std::unique_ptr<server_tool>> & tools
+@@ -2069,6 +2069,316 @@ static server_tool & find_tool(std::vector<std::unique_ptr<server_tool>> & tools
  // public API
  //
  
@@ -57,7 +57,8 @@ index e4d941509..5673f04c4 100644
 +// 70) they also ask it to write a handoff note with save_handoff, kept by name
 +// on the machine llama-server runs on, never through the file tools, so the
 +// model needs no path. load_handoff reads one back in a new conversation, and
-+// GET /tools?list=handoffs lists them for the web UI, without the model.
++// GET /tools?list=handoffs lists them for the web UI, without the model, and
++// GET /tools?handoff=<name> shows one as a page.
 +//
 +
 +static int ps5lm_handoff_at() {
@@ -174,6 +175,37 @@ index e4d941509..5673f04c4 100644
 +}
 +
 +static constexpr size_t SERVER_TOOL_HANDOFF_MAX_SIZE = 64 * 1024;
++
++// One note as a page to read in the browser (GET /tools?handoff=<name>), the
++// Markdown as it was written, escaped, in a <pre> that wraps.
++static bool ps5lm_handoff_page(const std::string & raw_name, std::string & page) {
++    const std::string note_name = ps5lm_handoff_name(raw_name);
++    if (note_name.empty()) {
++        return false;
++    }
++    std::ifstream in(ps5lm_handoff_dir_ready() / (note_name + ".md"), std::ios::binary);
++    if (!in) {
++        return false;
++    }
++    const std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
++    std::string text;
++    for (char c : content) {
++        switch (c) {
++            case '&': text += "&amp;"; break;
++            case '<': text += "&lt;";  break;
++            case '>': text += "&gt;";  break;
++            default:  text += c;
++        }
++    }
++    page = "<!doctype html><html><head><meta charset=\"utf-8\">"
++           "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
++           "<title>" + note_name + " - handoff</title><style>"
++           ":root{color-scheme:light dark}body{margin:0 auto;max-width:860px;padding:24px 16px;"
++           "font:15px/1.55 system-ui,sans-serif}h1{font-size:18px;margin:0 0 16px}"
++           "pre{white-space:pre-wrap;word-wrap:break-word;font:14px/1.55 ui-monospace,monospace}"
++           "</style></head><body><h1>" + note_name + "</h1><pre>" + text + "</pre></body></html>";
++    return true;
++}
 +
 +struct server_tool_context_status : server_tool {
 +    server_tool_context_status() {
@@ -322,7 +354,7 @@ index e4d941509..5673f04c4 100644
  static std::vector<std::unique_ptr<server_tool>> build_tools() {
      // IMPORTANT: for contributors, please keep this array of tools as minimal as possible
      //            we only accept minimal i/o and shell command tools here
-@@ -2083,6 +2361,9 @@ static std::vector<std::unique_ptr<server_tool>> build_tools() {
+@@ -2083,6 +2393,9 @@ static std::vector<std::unique_ptr<server_tool>> build_tools() {
      tools.push_back(std::make_unique<server_tool_write_file>());
      tools.push_back(std::make_unique<server_tool_edit_file>());
      tools.push_back(std::make_unique<server_tool_get_info>());
@@ -332,7 +364,7 @@ index e4d941509..5673f04c4 100644
      return tools;
  }
  
-@@ -2180,9 +2461,18 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
+@@ -2180,9 +2493,31 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
          }
      }
  
@@ -349,10 +381,23 @@ index e4d941509..5673f04c4 100644
 +                res->data = safe_json_to_str(notes);
 +                return res;
 +            }
++            // PS5LM: one note, to read in a browser tab
++            if (!req.get_param("handoff").empty()) {
++                std::string page;
++                if (ps5lm_handoff_page(req.get_param("handoff"), page)) {
++                    res->content_type = "text/html; charset=utf-8";
++                    res->data = page;
++                } else {
++                    res->status = 404;
++                    res->content_type = "text/plain; charset=utf-8";
++                    res->data = "no such handoff note";
++                }
++                return res;
++            }
              json result = json::array();
              for (const auto & t : tools) {
                  result.push_back(t->to_json());
-@@ -2275,6 +2565,11 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
+@@ -2275,6 +2610,11 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
                  };
              } else {
                  json result = tool.invoke(params, nullptr);
