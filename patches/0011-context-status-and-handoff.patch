@@ -1,4 +1,4 @@
-PS5LM: context_status, save_handoff and load_handoff tools: the model sees how full its context is (after each remote_command result, and past LLAMA_HANDOFF_AT percent after every tool result) and saves a handoff note to LLAMA_HANDOFF_PATH for the next conversation.
+PS5LM: context_status, save_handoff and load_handoff tools: the model sees how full its context is (after each remote_command result, and past LLAMA_HANDOFF_AT percent after every tool result) and saves handoff notes by name, in LLAMA_HANDOFF_DIR (default: a handoffs folder beside LLAMA_HANDOFF_PATH, whose single note is moved in), for later conversations. GET /tools?list=handoffs lists them for the web UI.
 
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
 index 6dba147c4..0b4e5e530 100644
@@ -34,10 +34,10 @@ index 6dba147c4..0b4e5e530 100644
              slot.mctx                   = mctx;
              slot.prompt.tokens.has_mtmd = mctx != nullptr;
 diff --git a/tools/server/server-tools.cpp b/tools/server/server-tools.cpp
-index e4d941509..b090b2744 100644
+index e4d941509..5673f04c4 100644
 --- a/tools/server/server-tools.cpp
 +++ b/tools/server/server-tools.cpp
-@@ -2069,6 +2069,194 @@ static server_tool & find_tool(std::vector<std::unique_ptr<server_tool>> & tools
+@@ -2069,6 +2069,284 @@ static server_tool & find_tool(std::vector<std::unique_ptr<server_tool>> & tools
  // public API
  //
  
@@ -54,10 +54,10 @@ index e4d941509..b090b2744 100644
 +// llama-server counts the tokens of the last request (prompt and answer) when
 +// its slot is released, below in server-context.cpp. context_status and each
 +// remote_command result tell the model; past LLAMA_HANDOFF_AT percent (default
-+// 70) they also ask it to write a handoff note with save_handoff, which goes to
-+// LLAMA_HANDOFF_PATH on the machine llama-server runs on, never through the
-+// file tools, so the model needs no path. load_handoff reads it back in a new
-+// conversation.
++// 70) they also ask it to write a handoff note with save_handoff, kept by name
++// on the machine llama-server runs on, never through the file tools, so the
++// model needs no path. load_handoff reads one back in a new conversation, and
++// GET /tools?list=handoffs lists them for the web UI, without the model.
 +//
 +
 +static int ps5lm_handoff_at() {
@@ -95,9 +95,82 @@ index e4d941509..b090b2744 100644
 +    return line.find("[WARNING") != std::string::npos ? line : "";
 +}
 +
-+static std::string ps5lm_handoff_path() {
-+    const char * path = std::getenv("LLAMA_HANDOFF_PATH");
-+    return path && *path ? path : "handoff.md";
++// Handoff notes are kept by name, one file each, in LLAMA_HANDOFF_DIR (by default
++// a "handoffs" folder beside LLAMA_HANDOFF_PATH, where the single note of
++// earlier builds was kept; that note is moved in as "handoff").
++static fs::path ps5lm_handoff_dir() {
++    const char * dir = std::getenv("LLAMA_HANDOFF_DIR");
++    if (dir && *dir) {
++        return dir;
++    }
++    const char * old = std::getenv("LLAMA_HANDOFF_PATH");
++    const fs::path parent = old && *old ? fs::path(old).parent_path() : fs::path();
++    return parent / "handoffs";
++}
++
++// the dir, made if need be, with the old single note moved in
++static fs::path ps5lm_handoff_dir_ready() {
++    const fs::path dir = ps5lm_handoff_dir();
++    std::error_code ec;
++    fs::create_directories(dir, ec);
++    const char * old = std::getenv("LLAMA_HANDOFF_PATH");
++    if (old && *old && fs::is_regular_file(old, ec) && !fs::exists(dir / "handoff.md", ec)) {
++        fs::rename(old, dir / "handoff.md", ec);
++    }
++    return dir;
++}
++
++// "FTP deploy fix!" -> "ftp-deploy-fix"; "" when nothing usable is left
++static std::string ps5lm_handoff_name(const std::string & raw) {
++    std::string name;
++    for (unsigned char c : raw) {
++        if (std::isalnum(c) || c == '_') {
++            name += (char) std::tolower(c);
++        } else if (!name.empty() && name.back() != '-') {
++            name += '-';
++        }
++        if (name.size() >= 64) {
++            break;
++        }
++    }
++    while (!name.empty() && name.back() == '-') {
++        name.pop_back();
++    }
++    return name;
++}
++
++struct ps5lm_handoff_entry {
++    std::string name;
++    uintmax_t   bytes;
++    int64_t     modified;  // unix seconds
++};
++
++// newest first
++static std::vector<ps5lm_handoff_entry> ps5lm_handoff_list() {
++    std::vector<ps5lm_handoff_entry> out;
++    std::error_code ec;
++    const auto now_file = fs::file_time_type::clock::now();
++    const auto now_sys  = std::chrono::system_clock::now();
++    for (fs::directory_iterator it(ps5lm_handoff_dir_ready(), ec), end; !ec && it != end; it.increment(ec)) {
++        const fs::path p = it->path();
++        if (p.extension() != ".md" || !it->is_regular_file(ec)) {
++            continue;
++        }
++        const auto age = now_file - fs::last_write_time(p, ec);
++        const auto when = now_sys - std::chrono::duration_cast<std::chrono::system_clock::duration>(age);
++        out.push_back({p.stem().string(), fs::file_size(p, ec),
++                       (int64_t) std::chrono::duration_cast<std::chrono::seconds>(when.time_since_epoch()).count()});
++    }
++    std::sort(out.begin(), out.end(), [](const auto & a, const auto & b) { return a.modified > b.modified; });
++    return out;
++}
++
++static std::string ps5lm_handoff_names() {
++    std::string names;
++    for (const auto & e : ps5lm_handoff_list()) {
++        names += (names.empty() ? "" : ", ") + e.name;
++    }
++    return names.empty() ? "(none)" : names;
 +}
 +
 +static constexpr size_t SERVER_TOOL_HANDOFF_MAX_SIZE = 64 * 1024;
@@ -138,7 +211,7 @@ index e4d941509..b090b2744 100644
 +    server_tool_save_handoff() {
 +        name = "save_handoff";
 +        display_name = "Save handoff note";
-+        permission_write = false;  // one fixed file, nothing the model can aim elsewhere
++        permission_write = false;  // one folder of its own, nothing the model can aim elsewhere
 +    }
 +
 +    json get_definition() const override {
@@ -146,7 +219,7 @@ index e4d941509..b090b2744 100644
 +            {"type", "function"},
 +            {"function", {
 +                {"name", name},
-+                {"description", "Save a handoff note for the next conversation, replacing the last one. "
++                {"description", "Save a handoff note for a later conversation, under a short name for the work. "
 +                                "Use it when your context is nearly full or the user asks. Write it for a reader "
 +                                "who knows nothing of this conversation: the goal, what is done, what was found "
 +                                "(commands, file paths and on which machine, results), what is left, and the next step. "
@@ -154,28 +227,32 @@ index e4d941509..b090b2744 100644
 +                {"parameters", {
 +                    {"type", "object"},
 +                    {"properties", {
++                        {"name", {{"type", "string"}, {"description",
++                            "A short name for the work, a few words, e.g. \"ftp deploy fix\". "
++                            "Use the same name to replace a note saved earlier for the same work"}}},
 +                        {"content", {{"type", "string"}, {"description", "The note, in Markdown"}}},
 +                    }},
-+                    {"required", json::array({"content"})},
++                    {"required", json::array({"name", "content"})},
 +                }},
 +            }},
 +        };
 +    }
 +
 +    json invoke(json params, server_tool::stream *) const override {
++        const std::string note_name = ps5lm_handoff_name(params.value("name", std::string()));
++        if (note_name.empty()) {
++            return {{"error", "give the note a name: a few words for the work, e.g. \"ftp deploy fix\""}};
++        }
 +        const std::string content = params.at("content").get<std::string>();
 +        if (content.size() > SERVER_TOOL_HANDOFF_MAX_SIZE) {
 +            return {{"error", string_format("note too long (%zu bytes, max %zu): shorten it",
 +                                            content.size(), SERVER_TOOL_HANDOFF_MAX_SIZE)}};
 +        }
-+        const std::string path = ps5lm_handoff_path();
++        const fs::path path = ps5lm_handoff_dir_ready() / (note_name + ".md");
 +        std::error_code ec;
-+        const auto parent = fs::path(path).parent_path();
-+        if (!parent.empty()) {
-+            fs::create_directories(parent, ec);
-+        }
++        const bool replaced = fs::exists(path, ec);
 +        // write beside it, then rename: a crash never leaves half a note
-+        const std::string tmp = path + ".tmp";
++        const fs::path tmp = path.string() + ".tmp";
 +        {
 +            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
 +            out.write(content.data(), (std::streamsize) content.size());
@@ -188,8 +265,9 @@ index e4d941509..b090b2744 100644
 +            return {{"error", "cannot save the handoff note: " + ec.message()}};
 +        }
 +        return {{"plain_text_response", string_format(
-+            "handoff note saved (%zu bytes). Tell the user to start a new conversation and ask it to load the handoff.",
-+            content.size())}};
++            "handoff note \"%s\" %s (%zu bytes). Tell the user to start a new conversation and ask it to "
++            "load the handoff \"%s\".", note_name.c_str(), replaced ? "replaced" : "saved", content.size(),
++            note_name.c_str())}};
 +    }
 +};
 +
@@ -205,34 +283,46 @@ index e4d941509..b090b2744 100644
 +            {"type", "function"},
 +            {"function", {
 +                {"name", name},
-+                {"description", "Read the handoff note an earlier conversation saved with save_handoff, "
-+                                "to carry on its work. Use it when the user asks to continue or to load the handoff."},
++                {"description", "Read a handoff note an earlier conversation saved with save_handoff, "
++                                "to carry on its work. Use it when the user asks to continue or to load a handoff."},
 +                {"parameters", {
 +                    {"type", "object"},
-+                    {"properties", json::object()},
++                    {"properties", {
++                        {"name", {{"type", "string"}, {"description",
++                            "The note's name, as the user gives it. Leave it out for the most recent note"}}},
++                    }},
 +                }},
 +            }},
 +        };
 +    }
 +
-+    json invoke(json, server_tool::stream *) const override {
-+        std::ifstream in(ps5lm_handoff_path(), std::ios::binary);
++    json invoke(json params, server_tool::stream *) const override {
++        std::string note_name = ps5lm_handoff_name(params.value("name", std::string()));
++        if (note_name.empty()) {
++            const auto all = ps5lm_handoff_list();
++            if (all.empty()) {
++                return {{"plain_text_response", "no handoff note has been saved"}};
++            }
++            note_name = all.front().name;
++        }
++        std::ifstream in(ps5lm_handoff_dir_ready() / (note_name + ".md"), std::ios::binary);
 +        if (!in) {
-+            return {{"plain_text_response", "no handoff note has been saved"}};
++            return {{"plain_text_response", "no handoff note \"" + note_name + "\". Saved notes: " +
++                                            ps5lm_handoff_names()}};
 +        }
 +        std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 +        if (content.size() > SERVER_TOOL_HANDOFF_MAX_SIZE) {
 +            content.resize(SERVER_TOOL_HANDOFF_MAX_SIZE);
 +            content += "\n[cut]";
 +        }
-+        return {{"plain_text_response", content}};
++        return {{"plain_text_response", "[handoff note \"" + note_name + "\"]\n" + content}};
 +    }
 +};
 +
  static std::vector<std::unique_ptr<server_tool>> build_tools() {
      // IMPORTANT: for contributors, please keep this array of tools as minimal as possible
      //            we only accept minimal i/o and shell command tools here
-@@ -2083,6 +2271,9 @@ static std::vector<std::unique_ptr<server_tool>> build_tools() {
+@@ -2083,6 +2361,9 @@ static std::vector<std::unique_ptr<server_tool>> build_tools() {
      tools.push_back(std::make_unique<server_tool_write_file>());
      tools.push_back(std::make_unique<server_tool_edit_file>());
      tools.push_back(std::make_unique<server_tool_get_info>());
@@ -242,7 +332,27 @@ index e4d941509..b090b2744 100644
      return tools;
  }
  
-@@ -2275,6 +2466,11 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
+@@ -2180,9 +2461,18 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
+         }
+     }
+ 
+-    handle_get = [this](const server_http_req &) -> server_http_res_ptr {
++    handle_get = [this](const server_http_req & req) -> server_http_res_ptr {
+         auto res = std::make_unique<server_http_res>();
+         try {
++            // PS5LM: the saved handoff notes, for the web UI's Handoffs button
++            if (req.get_param("list") == "handoffs") {
++                json notes = json::array();
++                for (const auto & e : ps5lm_handoff_list()) {
++                    notes.push_back({{"name", e.name}, {"bytes", e.bytes}, {"modified", e.modified}});
++                }
++                res->data = safe_json_to_str(notes);
++                return res;
++            }
+             json result = json::array();
+             for (const auto & t : tools) {
+                 result.push_back(t->to_json());
+@@ -2275,6 +2565,11 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
                  };
              } else {
                  json result = tool.invoke(params, nullptr);

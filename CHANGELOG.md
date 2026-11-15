@@ -15,6 +15,13 @@ v0.1.x are the upstream payload releases by cobanov.
   `env.txt`.
 
 ### Added
+- **Named handoff notes, and a Handoffs button**: `save_handoff` takes a short name for the work
+  and keeps each note as `/data/PS5LM/scratch/handoffs/<name>.md` (`LLAMA_HANDOFF_DIR`); saving
+  under a name already used replaces that note. `load_handoff` takes the name, or loads the most
+  recent note without one. The single `handoff.md` of earlier builds is moved in as `handoff`.
+  The browser chat has a Handoffs button (`ps5/app/ui/handoffs.js`) that lists the notes, newest
+  first, from `GET /tools?list=handoffs`, without asking the model; clicking one puts
+  "Load the handoff ..." in the message box.
 - **Every tool result says how full the context is**: the count line `remote_command` results
   end with now goes on every tool's result, the browser's MCP tools included, with the
   capitalized save_handoff warning past 70% (`LLAMA_HANDOFF_AT`). llama-server's own tools add it
